@@ -13,6 +13,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 using std::cerr;
 using std::endl;
 
@@ -31,14 +32,15 @@ public:
 };
 class loop {
 public:
+    ADDRINT target_address;
     ADDRINT rtn_address;
-    UINT64 countSeen;
+    UINT64 totalCountSeen;
     UINT64 countLoopInvoked;
-    UINT64 meanTaken;
-    UINT64 diffCount;
+    std::vector<UINT64> countSeen;
+
     
-    loop() :rtn_address((ADDRINT)0), countSeen(0), countLoopInvoked(0), meanTaken(0), diffCount(0) {}
-    loop(ADDRINT addr) :rtn_address(addr), countSeen(0), countLoopInvoked(0), meanTaken(0), diffCount(0) {}
+    loop() :target_address((ADDRINT)0), rtn_address((ADDRINT)0), totalCountSeen(0), countLoopInvoked(0) {}
+    loop(ADDRINT target_addr, ADDRINT rtn_addr) :target_address(target_addr), rtn_address(rtn_addr), totalCountSeen(0), countLoopInvoked(0) {}
     ~loop() {}
 };
 
@@ -79,10 +81,14 @@ VOID docount_ins(ADDRINT rtn_address) {
 VOID docount_rtn(ADDRINT rtn_address) {
     rtn_map[rtn_address].call_count++;
 }
-VOID docount_branch(ADDRINT target) {
-    loop_map[target].countSeen++;
+VOID docount_branch_iteration(ADDRINT loop_address) {
+    loop_map[loop_address].countSeen[loop_map[loop_address].countLoopInvoked]++;
+    loop_map[loop_address].totalCountSeen++;
 }
-
+VOID docount_branch_invocation(ADDRINT loop_address) {
+    loop_map[loop_address].countLoopInvoked++;
+    loop_map[loop_address].countSeen.push_back(0);
+}
 /* ===================================================================== */
 
 
@@ -98,15 +104,19 @@ VOID Instruction(INS ins, VOID* v) {
         if (rtn_address == INS_Address(ins)) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_ADDRINT, rtn_address, IARG_END);
         }
-        if (INS_IsDirectControlFlow(ins)) {
+        if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
             ADDRINT myself = INS_Address(ins);
             ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
             if (target < myself) {
-                loop loop_obj(rtn_address);
-                if (!isLoopExist(target)) {
-                    loop_map.emplace(target, loop_obj);
+                loop loop_obj(target, rtn_address);
+                if (!isLoopExist(myself)) {
+                    loop_map.emplace(myself, loop_obj);
+                    loop_map[myself].countSeen.push_back(0);
                 }
-                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch, IARG_ADDRINT, target, IARG_END);
+                if (INS_IsValidForIpointAfter(ins)) {
+                    INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
+                }
+                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
             }
         }
     }
@@ -120,13 +130,22 @@ VOID Fini(INT32 code, VOID* v) {
     for (auto itr = loop_map.begin(); itr != loop_map.end(); ++itr) {
         vec.push_back(*itr);
     }
-    sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, loop>& a, std::pair<ADDRINT, loop>& b) {return a.second.countSeen > b.second.countSeen; });
+    sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, loop>& a, std::pair<ADDRINT, loop>& b) {return a.second.totalCountSeen > b.second.totalCountSeen; });
     for (size_t i = 0; i < vec.size(); i++) {
         ADDRINT rtn_addr = vec[i].second.rtn_address;
-        output_file << "0x" << std::hex << vec[i].first << ", " << std::dec << vec[i].second.countSeen << ", "
-            << vec[i].second.countLoopInvoked << ", " << vec[i].second.meanTaken << ", " << vec[i].second.diffCount
-            << ", " << rtn_map[rtn_addr].name << ", 0x" << std::hex << rtn_addr << ", " << std::dec
-            << rtn_map[rtn_addr].ins_count << ", " << rtn_map[rtn_addr].call_count << endl;
+        if (vec[i].second.countLoopInvoked) {
+            UINT64 mean = vec[i].second.totalCountSeen / vec[i].second.countLoopInvoked;
+            UINT64 diffCount = 0;
+            for (size_t j = 0; j < vec[i].second.countSeen.size() - 1; j++) {
+                if (vec[i].second.countSeen[j] != vec[i].second.countSeen[j + 1]) {
+                    diffCount++;
+                }
+            }
+            output_file << "0x" << std::hex << vec[i].second.target_address << ", " << std::dec << vec[i].second.totalCountSeen << ", "
+                << vec[i].second.countLoopInvoked << ", " << mean << ", " << diffCount
+                << ", " << rtn_map[rtn_addr].name << ", 0x" << std::hex << rtn_addr << ", " << std::dec
+                << rtn_map[rtn_addr].ins_count << ", " << rtn_map[rtn_addr].call_count << endl;
+        }
     }
 }
 /* ===================================================================== */
@@ -135,6 +154,7 @@ VOID Fini(INT32 code, VOID* v) {
 
 int main(int argc, char* argv[])
 {
+
     PIN_InitSymbols();
     if (PIN_Init(argc, argv))
     {
