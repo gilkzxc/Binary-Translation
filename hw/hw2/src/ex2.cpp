@@ -46,14 +46,13 @@ public:
 
 static std::map<ADDRINT, rtn> rtn_map;
 static std::map<ADDRINT, loop> loop_map;
-//static std::vector<ADDRINT> suspected_forward_cond_jump_as_loop;
 bool isRtnExist(ADDRINT rtn_address) {
     return (!(rtn_map.find(rtn_address) == rtn_map.end()));
 }
 bool isLoopExist(ADDRINT loop_address) {
     return (!(loop_map.find(loop_address) == loop_map.end()));
 }
-//bool isJump
+
 /* ===================================================================== */
 /* Commandline Switches */
 /* ===================================================================== */
@@ -93,121 +92,58 @@ VOID docount_branch_invocation(ADDRINT loop_address) {
 /* ===================================================================== */
 
 
-
-VOID Routine(RTN rtn_arg, VOID* v) {
+VOID Instruction(INS ins, VOID* v) {
+    RTN rtn_arg = INS_Rtn(ins);
     if (RTN_Valid(rtn_arg)) {
         ADDRINT rtn_address = RTN_Address(rtn_arg);
         rtn rtn_obj(RTN_Name(rtn_arg));
         if (!isRtnExist(rtn_address)) {
             rtn_map.emplace(rtn_address, rtn_obj);
         }
-        RTN_Open(rtn_arg);
-        RTN_InsertCall(rtn_arg, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_ADDRINT, rtn_address, IARG_END);
-        for (INS ins = RTN_InsHead(rtn_arg); INS_Valid(ins); ins = INS_Next(ins))
-        {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_ADDRINT, rtn_address, IARG_END);
-            if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
-                ADDRINT myself = INS_Address(ins);
-                ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
+        if (rtn_address == INS_Address(ins)) {
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_ADDRINT, rtn_address, IARG_END);
+        }
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_ADDRINT, rtn_address, IARG_END);
+        if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
+            ADDRINT myself = INS_Address(ins);
+            ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
+            if (target < myself) {
+                loop loop_obj(target, rtn_address);
+                if (!isLoopExist(myself)) {
+                    loop_map.emplace(myself, loop_obj);
+                    loop_map[myself].countSeen.push_back(0);
+                }
+                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                 if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
-                    if (target < myself) {
-                        /* Handles 1st type loops, with single cond jump backwards. */
-                        loop loop_obj(target, rtn_address);
-                        if (!isLoopExist(myself)) {
-                            loop_map.emplace(myself, loop_obj);
-                            loop_map[myself].countSeen.push_back(0);
-                        }
-                        if (INS_IsValidForIpointAfter(ins)) {
-                            INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
-                        }
-                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
+                    /* Handles 1st type loops, with single cond jump backwards. */
+                    if (INS_IsValidForIpointAfter(ins)) {
+                        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
                     }
-                    else if (target > myself) {
-                        /* Handles 2nd type loops, with a single cond' jump forward
-                            and a single uncond' jump backwards to the address of myself.
-                        */
-                        INS cond_jump = INS_Next(ins);
-                        for (; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
-                            if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_UNCOND_BR 
-                                && INS_DirectControlFlowTargetAddress(cond_jump) <= myself){
-                                break;
+                }
+                else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
+                    /* Handles 2nd type loops, with a single cond' jump forward
+                        and a single uncond' jump backwards to the address of myself.
+                    */
+                    RTN_Open(rtn_arg);
+                    INS start = RTN_InsHead(rtn_arg);
+                    for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {
+                        ;
+                    }
+                    for (INS cond_jump = start; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
+                        if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
+                            && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
+                            if (INS_IsValidForIpointTakenBranch(cond_jump)) {
+                                INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
                             }
-                        }
-                        if (INS_Valid(cond_jump)) {
-                            if(INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump)){
-                                ADDRINT target_back = INS_DirectControlFlowTargetAddress(cond_jump);
-                                loop loop_obj(target_back, rtn_address);
-                                if (!isLoopExist(myself)) {
-                                    loop_map.emplace(myself, loop_obj);
-                                    loop_map[myself].countSeen.push_back(0);
-                                }
-                                INS_InsertCall(cond_jump, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
-                                if (INS_IsValidForIpointTakenBranch(ins)) {
-                                    INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
-                                }
-                            }
+                            break;
                         }
                     }
-
+                    RTN_Close(rtn_arg);
                 }
             }
         }
-        RTN_Close(rtn_arg);
     }
 }
-VOID Routine2(RTN rtn_arg, VOID* v) {
-    if (RTN_Valid(rtn_arg)) {
-        ADDRINT rtn_address = RTN_Address(rtn_arg);
-        rtn rtn_obj(RTN_Name(rtn_arg));
-        if (!isRtnExist(rtn_address)) {
-            rtn_map.emplace(rtn_address, rtn_obj);
-        }
-        RTN_Open(rtn_arg);
-        RTN_InsertCall(rtn_arg, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_ADDRINT, rtn_address, IARG_END);
-        for (INS ins = RTN_InsHead(rtn_arg); INS_Valid(ins); ins = INS_Next(ins))
-        {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_ADDRINT, rtn_address, IARG_END);
-            if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
-                ADDRINT myself = INS_Address(ins);
-                ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
-                if (target < myself) {
-                    loop loop_obj(target, rtn_address);
-                    if (!isLoopExist(myself)) {
-                        loop_map.emplace(myself, loop_obj);
-                        loop_map[myself].countSeen.push_back(0);
-                    }
-                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
-                    if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
-                        /* Handles 1st type loops, with single cond jump backwards. */
-                        if (INS_IsValidForIpointAfter(ins)) {
-                            INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
-                        }
-                    }
-                    else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
-                        /* Handles 2nd type loops, with a single cond' jump forward
-                            and a single uncond' jump backwards to the address of myself.
-                        */
-                        INS start = RTN_InsHead(rtn_arg);
-                        for (; INS_Valid(start)&& INS_Address(start) < target; start = INS_Next(start)) {
-                            ;
-                        }
-                        for (INS cond_jump = start; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
-                            if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
-                                && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
-                                if (INS_IsValidForIpointTakenBranch(cond_jump)) {
-                                    INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        RTN_Close(rtn_arg);
-    }
-}
-
 /* ===================================================================== */
 
 VOID Fini(INT32 code, VOID* v) {
@@ -221,12 +157,6 @@ VOID Fini(INT32 code, VOID* v) {
     sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, loop>& a, std::pair<ADDRINT, loop>& b) {return a.second.totalCountSeen > b.second.totalCountSeen; });
     for (size_t i = 0; i < vec.size(); i++) {
         ADDRINT rtn_addr = vec[i].second.rtn_address;
-        if (rtn_map[rtn_addr].name.find("foo") != std::string::npos) {
-            std::cout << "A loop of foo was found." << std::endl;
-            std::cout << "Address key: " << std::hex << vec[i].first << endl;
-            std::cout << "TotalCountSeen: " << vec[i].second.totalCountSeen << std::endl;
-            std::cout << "countLoopInvoked: " << vec[i].second.countLoopInvoked << std::endl;
-        }
         if (vec[i].second.countLoopInvoked) {
             UINT64 mean = vec[i].second.totalCountSeen / vec[i].second.countLoopInvoked;
             UINT64 diffCount = 0;
@@ -255,8 +185,7 @@ int main(int argc, char* argv[])
         return Usage();
     }
     
-    //RTN_AddInstrumentFunction(Routine, 0);
-    RTN_AddInstrumentFunction(Routine2, 0);
+    INS_AddInstrumentFunction(Instruction, 0);
     PIN_AddFiniFunction(Fini, 0);
     // Never returns
     PIN_StartProgram();
