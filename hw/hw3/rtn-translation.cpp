@@ -112,7 +112,7 @@ typedef struct {
 	char encoded_ins[XED_MAX_INSTRUCTION_BYTES];
 	xed_category_enum_t category_enum;
 	unsigned int size;
-	int new_targ_entry;
+	int targ_map_entry;
 } instr_map_t;
 
 
@@ -251,8 +251,8 @@ void dump_instr_map_entry(int instr_map_entry)
 	cerr << " orig_targ_addr: " << hex << instr_map[instr_map_entry].orig_targ_addr;
 
 	ADDRINT new_targ_addr;
-	if (instr_map[instr_map_entry].new_targ_entry >= 0)
-		new_targ_addr = instr_map[instr_map[instr_map_entry].new_targ_entry].new_ins_addr;
+	if (instr_map[instr_map_entry].targ_map_entry >= 0)
+		new_targ_addr = instr_map[instr_map[instr_map_entry].targ_map_entry].new_ins_addr;
 	else
 		new_targ_addr = instr_map[instr_map_entry].orig_targ_addr;
 
@@ -340,7 +340,7 @@ int add_new_instr_entry(xed_decoded_inst_t *xedd, ADDRINT pc, unsigned int size)
 	instr_map[num_of_instr_map_entries].new_ins_addr = (ADDRINT)&tc[tc_cursor];  // set an initial estimated addr in tc
 	instr_map[num_of_instr_map_entries].orig_targ_addr = orig_targ_addr; 
     instr_map[num_of_instr_map_entries].hasNewTargAddr = false;
-	instr_map[num_of_instr_map_entries].new_targ_entry = -1;
+	instr_map[num_of_instr_map_entries].targ_map_entry = -1;
 	instr_map[num_of_instr_map_entries].size = new_size;	
     instr_map[num_of_instr_map_entries].category_enum = xed_decoded_inst_get_category(xedd);
 
@@ -385,7 +385,7 @@ int chain_all_direct_br_and_call_target_entries()
 	
             if (instr_map[j].orig_ins_addr == instr_map[i].orig_targ_addr) {
                 instr_map[i].hasNewTargAddr = true; 
-	            instr_map[i].new_targ_entry = j;
+	            instr_map[i].targ_map_entry = j;
                 break;
 			}
 		}
@@ -497,7 +497,7 @@ int fix_direct_br_call_to_orig_addr(int instr_map_entry)
 	}
 
 	// check for cases of direct jumps/calls back to the orginal target address:
-	if (instr_map[instr_map_entry].new_targ_entry >= 0) {
+	if (instr_map[instr_map_entry].targ_map_entry >= 0) {
 		cerr << "ERROR: Invalid jump or call instruction" << endl;
 		return -1;
 	}
@@ -611,13 +611,13 @@ int fix_direct_br_call_displacement(int instr_map_entry)
 	}
 
 	// fix branches/calls to original targ addresses:
-	if (instr_map[instr_map_entry].new_targ_entry < 0) {
+	if (instr_map[instr_map_entry].targ_map_entry < 0) {
 	   int rc = fix_direct_br_call_to_orig_addr(instr_map_entry);
 	   return rc;
 	}
 
 	ADDRINT new_targ_addr;		
-	new_targ_addr = instr_map[instr_map[instr_map_entry].new_targ_entry].new_ins_addr;
+	new_targ_addr = instr_map[instr_map[instr_map_entry].targ_map_entry].new_ins_addr;
 		
 	new_disp = (new_targ_addr - instr_map[instr_map_entry].new_ins_addr) - instr_map[instr_map_entry].size; // orig_size;
 
@@ -653,7 +653,7 @@ int fix_direct_br_call_displacement(int instr_map_entry)
   		return -1;
 	}		
 
-	new_targ_addr = instr_map[instr_map[instr_map_entry].new_targ_entry].new_ins_addr;
+	new_targ_addr = instr_map[instr_map[instr_map_entry].targ_map_entry].new_ins_addr;
 
 	new_disp = new_targ_addr - (instr_map[instr_map_entry].new_ins_addr + new_size);  // this is the correct displacemnet.
 
@@ -697,18 +697,18 @@ int fix_instructions_displacements()
 
 			instr_map[i].new_ins_addr += size_diff;
 				   
-			int rc = 0;
+			int new_size = 0;
 
 			// fix rip displacement:			
-			rc = fix_rip_displacement(i);
-			if (rc < 0)
+			new_size = fix_rip_displacement(i);
+			if (new_size < 0)
 				return -1;
 
-			if (rc > 0) { // this was a rip-based instruction which was fixed.
+			if (new_size > 0) { // this was a rip-based instruction which was fixed.
 
-				if (instr_map[i].size != (unsigned int)rc) {
-				   size_diff += (rc - instr_map[i].size); 					
-				   instr_map[i].size = (unsigned int)rc;								
+				if (instr_map[i].size != (unsigned int)new_size) {
+				   size_diff += (new_size - instr_map[i].size); 					
+				   instr_map[i].size = (unsigned int)new_size;								
 				}
 
 				continue;   
@@ -721,13 +721,13 @@ int fix_instructions_displacements()
 
 
 			// fix instr displacement:			
-			rc = fix_direct_br_call_displacement(i);
-			if (rc < 0)
+			new_size = fix_direct_br_call_displacement(i);
+			if (new_size < 0)
 				return -1;
 
-			if (instr_map[i].size != (unsigned int)rc) {
-			   size_diff += (rc - instr_map[i].size);
-			   instr_map[i].size = (unsigned int)rc;
+			if (instr_map[i].size != (unsigned int)new_size) {
+			   size_diff += (new_size - instr_map[i].size);
+			   instr_map[i].size = (unsigned int)new_size;
 			}
 
 		}  // end int i=0; i ..
@@ -763,8 +763,7 @@ int find_candidate_rtns_for_translation(IMG img)
 			if(!in_top_ten(rtn_addr)){
 				continue;
 			}
-			std::cout << "IM HERE" << std::endl;
-			translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;			
+			translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;		
 			translated_rtn[translated_rtn_num].rtn_size = RTN_Size(rtn);
 			translated_rtn[translated_rtn_num].instr_map_entry = num_of_instr_map_entries;
 			translated_rtn[translated_rtn_num].isSafeForReplacedProbe = true;	
@@ -968,113 +967,8 @@ int allocate_and_init_memory(IMG img)
 
 
 
-/* ============================================ */
-/* Main translation routine                     */
-/* ============================================ */
-VOID ImageLoad(IMG img, VOID *v)
-{
-	// debug print of all images' instructions
-	//dump_all_image_instrs(img);
 
 
-    // Step 0: Check the image and the CPU:
-	if (!IMG_IsMainExecutable(img))
-		return;
-
-	int rc = 0;
-
-	// step 1: Check size of executable sections and allocate required memory:	
-	rc = allocate_and_init_memory(img);
-	if (rc < 0)
-		return;
-
-	cout << "after memory allocation" << endl;
-
-	
-	// Step 2: go over all routines and identify candidate routines and copy their code into the instr map IR:
-	rc = find_candidate_rtns_for_translation(img);
-	if (rc < 0)
-		return;
-
-	cout << "after identifying candidate routines" << endl;	 
-	
-	// Step 3: Chaining - calculate direct branch and call instructions to point to corresponding target instr entries:
-	rc = chain_all_direct_br_and_call_target_entries();
-	if (rc < 0 )
-		return;
-	
-	cout << "after calculate direct br targets" << endl;
-
-	// Step 4: fix rip-based, direct branch and direct call displacements:
-	rc = fix_instructions_displacements();
-	if (rc < 0 )
-		return;
-	
-	cout << "after fix instructions displacements" << endl;
-
-
-	// Step 5: write translated routines to new tc:
-	rc = copy_instrs_to_tc();
-	if (rc < 0 )
-		return;
-
-	cout << "after write all new instructions to memory tc" << endl;
-
-   if (KnobDumpTranslatedCode) {
-	   cerr << "Translation Cache dump:" << endl;
-       dump_tc();  // dump the entire tc
-
-	   cerr << endl << "instructions map dump:" << endl;
-	   dump_entire_instr_map();     // dump all translated instructions in map_instr
-   }
-
-
-	// Step 6: Commit the translated routines:
-	//Go over the candidate functions and replace the original ones by their new successfully translated ones:
-        if (!KnobDoNotCommitTranslatedCode) {
-	  commit_translated_routines();	
-	  cout << "after commit translated routines" << endl;
-        }
-}
-
-
-
-/* ===================================================================== */
-/* Print Help Message                                                    */
-/* ===================================================================== */
-//INT32 Usage()
-//{
-//    cerr << "This tool translated routines of an Intel(R) 64 binary"
-//         << endl;
-//    cerr << KNOB_BASE::StringKnobSummary();
-//    cerr << endl;
-//    return -1;
-//}
-
-
-/* ===================================================================== */
-/* Main                                                                  */
-/* ===================================================================== */
-
-//int main(int argc, char * argv[])
-//{
-//
-//    // Initialize pin & symbol manager
-//    //out = new std::ofstream("xed-print.out");
-//
-//    if( PIN_Init(argc,argv) )
-//        return Usage();
-//
-//    PIN_InitSymbols();
-//
-//	// Register ImageLoad
-//	IMG_AddInstrumentFunction(ImageLoad, 0);
-//
-//    // Start the program, never returns
-//    PIN_StartProgramProbed();
-//
-//    return 0;
-//}
 
 /* ===================================================================== */
 /* eof */

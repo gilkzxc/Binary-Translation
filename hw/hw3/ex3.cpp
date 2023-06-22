@@ -44,14 +44,10 @@ public:
     loop(ADDRINT target_addr, ADDRINT rtn_addr) :target_address(target_addr), rtn_address(rtn_addr), totalCountSeen(0), countLoopInvoked(0) {}
     ~loop() {}
 };
-//class compare_rtn_by_ins_count {
-//public:
-//    bool operator() (const ADDRINT& lhs, const ADDRINT& rhs) const{
-//        return lhs < rhs;
-//    }
-//};
+
 static std::map<ADDRINT, rtn> rtn_map;
 static std::map<ADDRINT, loop> loop_map;
+//bool vaild_file_input = true;
 bool isRtnExist(ADDRINT rtn_address) {
     return (!(rtn_map.find(rtn_address) == rtn_map.end()));
 }
@@ -101,6 +97,7 @@ VOID docount_branch_invocation(ADDRINT loop_address) {
     loop_map[loop_address].countLoopInvoked++;
     loop_map[loop_address].countSeen.push_back(0);
 }
+
 /* ===================================================================== */
 
 
@@ -125,9 +122,11 @@ VOID Instruction(INS ins, VOID* v) {
                     loop_map.emplace(myself, loop_obj);
                     loop_map[myself].countSeen.push_back(0);
                 }
-                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                 if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
                     /* Handles 1st type loops, with single cond jump backwards. */
+                    if (INS_IsValidForIpointTakenBranch(ins)) {
+                        INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
+                    }
                     if (INS_IsValidForIpointAfter(ins)) {
                         INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
                     }
@@ -136,6 +135,7 @@ VOID Instruction(INS ins, VOID* v) {
                     /* Handles 2nd type loops, with a single cond' jump forward
                         and a single uncond' jump backwards to the address of myself.
                     */
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                     RTN_Open(rtn_arg);
                     INS start = RTN_InsHead(rtn_arg);
                     for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {
@@ -193,7 +193,12 @@ std::vector<std::string> split(std::string const& str, const char delim)
     return tokens;
 }
 
-void get_top_ten_rtn(std::ifstream &input_file) {
+bool get_top_ten_rtn(IMG main_img) {
+    std::ifstream input_file("loop-count.csv");
+    if (!input_file.is_open()) {
+        /* Failed to open. */
+        return false;
+    }
     std::string line;
     while (std::getline(input_file, line)) {
         std::vector<std::string> temp_line = split(line, ',');
@@ -201,11 +206,9 @@ void get_top_ten_rtn(std::ifstream &input_file) {
         ADDRINT addr;
         std::istringstream addr_in_hex(temp_line[6]);
         addr_in_hex >> std::hex >> addr;
-        /*IMG img = IMG_FindByAddress(addr);
+        IMG img = IMG_FindByAddress(addr);
         if (IMG_Valid(img)) {
-            std::cout << "FUCK1\n";
             if (IMG_IsMainExecutable(img)) {
-                std::cout << "FICK2\n";
                 if (!in_top_ten(addr)) {
                     if (top_ten_rtn.size() < 10) {
                         top_ten_rtn.push_back(std::pair<ADDRINT, UINT64>(addr, ins_count));
@@ -220,36 +223,84 @@ void get_top_ten_rtn(std::ifstream &input_file) {
                     }
                 }
             }
-        }*/
-        if (RTN_Valid(RTN_FindByAddress(addr))) {
-            std::cout << "SO FUCKED!\n";
-            IMG img = IMG_FindByAddress(addr);
-            std::cout << "FUCCCCCCCCCCCCCCCCCC\n";
-            if (IMG_Valid(img)) {
-                std::cout << "FUCK1\n";
-                if (IMG_IsMainExecutable(img)) {
-                    std::cout << "FICK2\n";
-                    if (!in_top_ten(addr)) {
-                        if (top_ten_rtn.size() < 10) {
-                            top_ten_rtn.push_back(std::pair<ADDRINT, UINT64>(addr, ins_count));
-                            sort(top_ten_rtn.begin(), top_ten_rtn.end(), [=](std::pair<ADDRINT, UINT64>& a, std::pair<ADDRINT, UINT64>& b) {return a.second < b.second; });
-                        }
-                        else {
-                            if (ins_count > top_ten_rtn[0].second) {
-                                top_ten_rtn.erase(top_ten_rtn.begin());
-                                top_ten_rtn.push_back(std::pair<ADDRINT, UINT64>(addr, ins_count));
-                                sort(top_ten_rtn.begin(), top_ten_rtn.end(), [=](std::pair<ADDRINT, UINT64>& a, std::pair<ADDRINT, UINT64>& b) {return a.second < b.second; });
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
-    std::cout << "Size of top ten: " << top_ten_rtn.size() << endl;
     input_file.close();
+    return true;
 }
 
+
+/* ============================================ */
+/* Main translation routine                     */
+/* ============================================ */
+VOID ImageLoad(IMG img, VOID* v)
+{
+    // debug print of all images' instructions
+    //dump_all_image_instrs(img);
+
+
+    // Step 0: Check the image and the CPU:
+    if (!IMG_IsMainExecutable(img))
+        return;
+    // Step 1: Fetch top ten routines. On failer exit ImageLoad.
+    if (!get_top_ten_rtn(img)) {
+        return;
+    }
+    int rc = 0;
+
+    // step 2: Check size of executable sections and allocate required memory:	
+    rc = allocate_and_init_memory(img);
+    if (rc < 0)
+        return;
+
+    cout << "after memory allocation" << endl;
+
+
+    // Step 3: go over all routines and identify candidate routines and copy their code into the instr map IR:
+    rc = find_candidate_rtns_for_translation(img);
+    if (rc < 0)
+        return;
+
+    cout << "after identifying candidate routines" << endl;
+
+    // Step 4: Chaining - calculate direct branch and call instructions to point to corresponding target instr entries:
+    rc = chain_all_direct_br_and_call_target_entries();
+    if (rc < 0)
+        return;
+
+    cout << "after calculate direct br targets" << endl;
+
+    // Step 5: fix rip-based, direct branch and direct call displacements:
+    rc = fix_instructions_displacements();
+    if (rc < 0)
+        return;
+
+    cout << "after fix instructions displacements" << endl;
+
+
+    // Step 6: write translated routines to new tc:
+    rc = copy_instrs_to_tc();
+    if (rc < 0)
+        return;
+
+    cout << "after write all new instructions to memory tc" << endl;
+
+    if (KnobDumpTranslatedCode) {
+        cerr << "Translation Cache dump:" << endl;
+        dump_tc();  // dump the entire tc
+
+        cerr << endl << "instructions map dump:" << endl;
+        dump_entire_instr_map();     // dump all translated instructions in map_instr
+    }
+
+
+    // Step 7: Commit the translated routines:
+    //Go over the candidate functions and replace the original ones by their new successfully translated ones:
+    if (!KnobDoNotCommitTranslatedCode) {
+        commit_translated_routines();
+        cout << "after commit translated routines" << endl;
+    }
+}
 /* ===================================================================== */
 /* Main                                                                  */
 /* ===================================================================== */
@@ -264,15 +315,8 @@ int main(int argc, char* argv[])
     }
     if (KnobInst) {
         /* Probe Mode */
-        std::ifstream input_file("loop-count.csv");
-        if (!input_file.is_open()) {
-            /* Failed to open. */
-            return 0;
-        }
-        get_top_ten_rtn(input_file);
         // Register ImageLoad
         IMG_AddInstrumentFunction(ImageLoad, 0);
-
         // Start the program, never returns
         PIN_StartProgramProbed();
     }
