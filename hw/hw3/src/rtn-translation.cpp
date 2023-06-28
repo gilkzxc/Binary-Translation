@@ -761,6 +761,7 @@ int find_candidate_rtns_for_translation(IMG img)
 			}
 			ADDRINT rtn_addr = RTN_Address(rtn);
 			if(!in_top_ten(rtn_addr)){
+				/* Only translate the top ten routine. */
 				continue;
 			}
 			translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;		

@@ -113,9 +113,11 @@ VOID Instruction(INS ins, VOID* v) {
                     loop_map.emplace(myself, loop_obj);
                     loop_map[myself].countSeen.push_back(0);
                 }
-                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                 if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
                     /* Handles 1st type loops, with single cond jump backwards. */
+                    if (INS_IsValidForIpointTakenBranch(ins)) {
+                        INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
+                    }
                     if (INS_IsValidForIpointAfter(ins)) {
                         INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
                     }
@@ -124,6 +126,7 @@ VOID Instruction(INS ins, VOID* v) {
                     /* Handles 2nd type loops, with a single cond' jump forward
                         and a single uncond' jump backwards to the address of myself.
                     */
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                     RTN_Open(rtn_arg);
                     INS start = RTN_InsHead(rtn_arg);
                     for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {

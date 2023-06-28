@@ -47,14 +47,23 @@ public:
 
 static std::map<ADDRINT, rtn> rtn_map;
 static std::map<ADDRINT, loop> loop_map;
-//bool vaild_file_input = true;
+
+/* ===================================================================== */
+/* Helper functions */
+/* ===================================================================== */
 bool isRtnExist(ADDRINT rtn_address) {
     return (!(rtn_map.find(rtn_address) == rtn_map.end()));
 }
 bool isLoopExist(ADDRINT loop_address) {
     return (!(loop_map.find(loop_address) == loop_map.end()));
 }
-
+std::vector<std::string> split(std::string const& str, const char delim)
+{
+    std::istringstream split(str);
+    std::vector<std::string> tokens;
+    for (std::string each; std::getline(split, each, delim); tokens.push_back(each));
+    return tokens;
+}
 /* ===================================================================== */
 /* Commandline Switches */
 /* ===================================================================== */
@@ -83,6 +92,9 @@ INT32 Usage()
 
 /* ===================================================================== */
 
+/* ===================================================================== */
+/* Analysis functions */
+/* ===================================================================== */
 VOID docount_ins(ADDRINT rtn_address) {
     rtn_map[rtn_address].ins_count++;
 }
@@ -100,7 +112,14 @@ VOID docount_branch_invocation(ADDRINT loop_address) {
 
 /* ===================================================================== */
 
-
+/*
+* Instruction instrument function:
+*   For every instruction in the trace, the function will insert analysis docount functions.
+*   Per routine, the function will insert instruction counter and routine calls counter.
+*   In addition, the function will instrument loops. As jumps backwards symbolise iteration of a loop.
+*   Also, count invocation when loops exit, and collect additional info to be analyze at FINI().
+*   
+*/
 VOID Instruction(INS ins, VOID* v) {
     RTN rtn_arg = INS_Rtn(ins);
     if (RTN_Valid(rtn_arg)) {
@@ -161,6 +180,7 @@ VOID Instruction(INS ins, VOID* v) {
 VOID Fini(INT32 code, VOID* v) {
     std::ofstream output_file("loop-count.csv", std::ofstream::out);
     std::vector<std::pair<ADDRINT, loop>> vec;
+    std::vector<ADDRINT> v_r;
     for (auto itr = loop_map.begin(); itr != loop_map.end(); ++itr) {
         if (itr->second.countLoopInvoked) {
             vec.push_back(*itr);
@@ -184,15 +204,19 @@ VOID Fini(INT32 code, VOID* v) {
         }
     }
 }
+/* ===================================================================== */
 
-std::vector<std::string> split(std::string const& str, const char delim)
-{
-    std::istringstream split(str);
-    std::vector<std::string> tokens;
-    for (std::string each; std::getline(split, each, delim); tokens.push_back(each));
-    return tokens;
-}
 
+/* ===================================================================== */
+/* Probe Mode */
+/* ===================================================================== */
+
+/* ===================================================================== */
+/*
+*   get_top_ten_rtn function:
+*       The function fetches from the csv file, the top 10 in number of instructions of routines
+*       from the main executable image. The result is inserted into top_ten_rtn vector.
+*/
 bool get_top_ten_rtn(IMG main_img) {
     std::ifstream input_file("loop-count.csv");
     if (!input_file.is_open()) {
@@ -228,7 +252,7 @@ bool get_top_ten_rtn(IMG main_img) {
     input_file.close();
     return true;
 }
-
+/* ===================================================================== */
 
 /* ============================================ */
 /* Main translation routine                     */
