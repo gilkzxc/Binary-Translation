@@ -124,6 +124,13 @@ VOID Instruction(INS ins, VOID* v) {
     RTN rtn_arg = INS_Rtn(ins);
     if (RTN_Valid(rtn_arg)) {
         ADDRINT rtn_address = RTN_Address(rtn_arg);
+        IMG img = IMG_FindByAddress(rtn_address);
+        if (!IMG_Valid(img)) {
+            return;
+        }
+        if (!IMG_IsMainExecutable(img)) {
+            return;
+        }
         rtn rtn_obj(RTN_Name(rtn_arg));
         if (!isRtnExist(rtn_address)) {
             rtn_map.emplace(rtn_address, rtn_obj);
