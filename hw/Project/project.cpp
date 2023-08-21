@@ -21,14 +21,54 @@ using std::endl;
 /* ===================================================================== */
 /* Global Variables */
 /* ===================================================================== */
+const std::string NO_DOMINATE_CALL("NO_DOMINATE_CALL");
+
 class rtn {
 public:
     std::string name;
     UINT64 ins_count;
     UINT64 call_count;
-
-    rtn() :name(""), ins_count(0), call_count(0) {}
-    rtn(const std::string new_name) :name(new_name), ins_count(0), call_count(0) {}
+    bool is_recursive;
+    std::vector<std::pair<std::string, UINT64>> caller_list;
+    rtn() :name(""), ins_count(0), call_count(0), is_recursive(false) {}
+    rtn(const std::string new_name) :name(new_name), ins_count(0), call_count(0), is_recursive(false) {}
+    bool isCallerExist(std::string caller_name) {
+        for (size_t i = 0; i < this->caller_list.size(); i++) {
+            if (this->caller_list[i].first == caller_name) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    std::string dominate_call() {
+        if (this->caller_list.empty()) {
+            return NO_DOMINATE_CALL;
+        }
+        sort(this->caller_list.begin(), this->caller_list.end(),
+            [=](std::pair<std::string, UINT64>& a, std::pair<std::string, UINT64>& b) {return a.second > b.second; });
+        for (size_t i = 1; i < this->caller_list.size(); i++) {
+            if (this->caller_list[i].second == this->caller_list[0].second) {
+                return NO_DOMINATE_CALL;
+            }
+        }
+        return this->caller_list[0].first;
+    }
+    bool new_caller(std::string rtn_name) {
+        if (this->isCallerExist(rtn_name)) {
+            return false;
+        }
+        this->caller_list.push_back(std::pair<std::string, UINT64>(rtn_name, 0));
+        return true;
+    }
+    UINT64* caller_counter_ptr(std::string caller_name) {
+        for (size_t i = 0; i < this->caller_list.size(); i++) {
+            if (this->caller_list[i].first == caller_name) {
+                return &(this->caller_list[i].second);
+            }
+        }
+        return nullptr;
+    }
     ~rtn() {}
 };
 class loop {
@@ -44,20 +84,10 @@ public:
     loop(ADDRINT target_addr, ADDRINT rtn_addr) :target_address(target_addr), rtn_address(rtn_addr), totalCountSeen(0), countLoopInvoked(0) {}
     ~loop() {}
 };
-class branch {
-public:
-    ADDRINT target_address;
-    UINT64 run_count;
-    UINT64 jump_count;
-    UINT64 hot_count;
-    bool is_taken_hot;
-    branch() :target_address((ADDRINT)0), run_count(0), jump_count(0), hot_count(0), is_taken_hot(false) {}
-    branch(ADDRINT target_addr) :target_address(target_addr), run_count(0), jump_count(0), hot_count(0), is_taken_hot(false) {}
-    ~branch() {}
-};
+
 static std::map<ADDRINT, rtn> rtn_map;
 static std::map<ADDRINT, loop> loop_map;
-std::map<ADDRINT, branch> branch_map;
+//std::map<ADDRINT, branch_taken> branch_taken_map;
 
 /* ===================================================================== */
 /* Helper functions */
@@ -68,9 +98,9 @@ bool isRtnExist(ADDRINT rtn_address) {
 bool isLoopExist(ADDRINT loop_address) {
     return (!(loop_map.find(loop_address) == loop_map.end()));
 }
-bool isBranchExist(ADDRINT branch_address) {
-    return (!(branch_map.find(branch_address) == branch_map.end()));
-}
+//bool isbranch_takenExist(ADDRINT branch_taken_address) {
+//    return (!(branch_taken_map.find(branch_taken_address) == branch_taken_map.end()));
+//}
 std::vector<std::string> split(std::string const& str, const char delim)
 {
     std::istringstream split(str);
@@ -144,53 +174,100 @@ VOID Instruction(INS ins, VOID* v) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
         }
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);
-        if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
-            ADDRINT myself = INS_Address(ins);
-            ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
-            if (target < myself) {
-                loop loop_obj(target, rtn_address);
-                if (!isLoopExist(myself)) {
-                    loop_map.emplace(myself, loop_obj);
-                    loop_map[myself].countSeen.push_back(0);
+        if (INS_IsDirectControlFlow(ins)) {
+            if (INS_IsCall(ins)) {
+                ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
+                if (target_address == rtn_address) {
+                    rtn_map[rtn_address].is_recursive = true;
                 }
-                if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
-                    /* Handles 1st type loops, with single cond jump backwards. */
-                    if (INS_IsValidForIpointTakenBranch(ins)) {
-                        INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
-                    }
-                    if (INS_IsValidForIpointAfter(ins)) {
-                        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_PTR,
-                            &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
+                else {
+                    rtn_map[target_address].new_caller(rtn_obj.name);
+                    UINT64* counter_ptr = rtn_map[target_address].caller_counter_ptr(rtn_obj.name);
+                    if (counter_ptr) {
+                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, counter_ptr, IARG_END);
                     }
                 }
-                else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
-                    /* Handles 2nd type loops, with a single cond' jump forward
-                        and a single uncond' jump backwards to the address of myself.
-                    */
-                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
-                    RTN_Open(rtn_arg);
-                    INS start = RTN_InsHead(rtn_arg);
-                    for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {
-                        ;
+            }
+            else {
+                ADDRINT myself = INS_Address(ins);
+                ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
+                if (target < myself) {
+                    loop loop_obj(target, rtn_address);
+                    if (!isLoopExist(myself)) {
+                        loop_map.emplace(myself, loop_obj);
+                        loop_map[myself].countSeen.push_back(0);
                     }
-                    for (INS cond_jump = start; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
-                        if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
-                            && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
-                            if (INS_IsValidForIpointTakenBranch(cond_jump)) {
-                                INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_PTR,
-                                    &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
-                            }
-                            break;
+                    if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
+                        /* Handles 1st type loops, with single cond jump backwards. */
+                        if (INS_IsValidForIpointTakenBranch(ins)) {
+                            INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
+                        }
+                        if (INS_IsValidForIpointAfter(ins)) {
+                            INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_PTR,
+                                &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
                         }
                     }
-                    RTN_Close(rtn_arg);
+                    else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
+                        /* Handles 2nd type loops, with a single cond' jump forward
+                            and a single uncond' jump backwards to the address of myself.
+                        */
+                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
+                        RTN_Open(rtn_arg);
+                        INS start = RTN_InsHead(rtn_arg);
+                        for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {
+                            ;
+                        }
+                        for (INS cond_jump = start; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
+                            if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
+                                && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
+                                if (INS_IsValidForIpointTakenBranch(cond_jump)) {
+                                    INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_PTR,
+                                        &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
+                                }
+                                break;
+                            }
+                        }
+                        RTN_Close(rtn_arg);
+                    }
                 }
             }
         }
     }
 }
 
-VOID Instruction2(INS ins, VOID* v) {
+//VOID Instruction2(INS ins, VOID* v) {
+//    RTN rtn_arg = INS_Rtn(ins);
+//    if (RTN_Valid(rtn_arg)) {
+//        ADDRINT rtn_address = RTN_Address(rtn_arg);
+//        IMG img = IMG_FindByAddress(rtn_address);
+//        if (!IMG_Valid(img)) {
+//            return;
+//        }
+//        if (!IMG_IsMainExecutable(img)) {
+//            return;
+//        }
+//        rtn rtn_obj(RTN_Name(rtn_arg));
+//        if (!isRtnExist(rtn_address)) {
+//            rtn_map.emplace(rtn_address, rtn_obj);
+//        }
+//        if (rtn_address == INS_Address(ins)) {
+//            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
+//        }
+//        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);
+//        if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
+//            ADDRINT myself = INS_Address(ins);
+//            ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
+//            branch_taken branch_taken_obj(target);
+//            if (!isbranch_takenExist(myself)) {
+//                branch_taken_map.emplace(myself, branch_taken_obj);
+//            }
+//            if (INS_IsValidForIpointTakenBranch(ins)) {
+//                INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_ins, IARG_PTR, &(branch_taken_map[myself].count), IARG_END);
+//            }
+//        }
+//    }
+//}
+VOID Instruction3(INS ins, VOID* v) {
     RTN rtn_arg = INS_Rtn(ins);
     if (RTN_Valid(rtn_arg)) {
         ADDRINT rtn_address = RTN_Address(rtn_arg);
@@ -205,20 +282,21 @@ VOID Instruction2(INS ins, VOID* v) {
         if (!isRtnExist(rtn_address)) {
             rtn_map.emplace(rtn_address, rtn_obj);
         }
-        if (rtn_address == INS_Address(ins)) {
+        /*if (rtn_address == INS_Address(ins)) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
         }
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);
-        if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
-            ADDRINT myself = INS_Address(ins);
-            ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
-            branch branch_obj(target);
-            if (!isBranchExist(myself)) {
-                branch_map.emplace(myself, branch_obj);
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);*/
+        if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins)) {
+            ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
+            if (target_address == rtn_address) {
+                rtn_map[rtn_address].is_recursive = true;
             }
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(branch_map[myself].run_count), IARG_END);
-            if (INS_IsValidForIpointTakenBranch(ins)) {
-                INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_ins, IARG_PTR, &(branch_map[myself].jump_count), IARG_END);
+            else {
+                rtn_map[target_address].new_caller(rtn_obj.name);
+                UINT64* counter_ptr = rtn_map[target_address].caller_counter_ptr(rtn_obj.name);
+                if (counter_ptr) {
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, counter_ptr, IARG_END);
+                }
             }
         }
     }
@@ -248,29 +326,36 @@ VOID Fini(INT32 code, VOID* v) {
             output_file << "0x" << std::hex << vec[i].second.target_address << ", " << std::dec << vec[i].second.totalCountSeen << ", "
                 << vec[i].second.countLoopInvoked << ", " << mean << ", " << diffCount
                 << ", " << rtn_map[rtn_addr].name << ", 0x" << std::hex << rtn_addr << ", " << std::dec
-                << rtn_map[rtn_addr].ins_count << ", " << rtn_map[rtn_addr].call_count << endl;
+                << rtn_map[rtn_addr].ins_count << ", " << rtn_map[rtn_addr].call_count << ", "
+                << rtn_map[rtn_addr].is_recursive << endl;
         }
     }
 }
-VOID Fini2(INT32 code, VOID* v) {
-    std::ofstream output_file("count.csv", std::ofstream::out);
-    std::vector<std::pair<ADDRINT, branch>> vec;
-    for (auto itr = branch_map.begin(); itr != branch_map.end(); ++itr) {
-        UINT64 delta = itr->second.run_count - itr->second.jump_count;
-        if (itr->second.jump_count > delta) {
-            itr->second.hot_count = itr->second.jump_count;
-            itr->second.is_taken_hot = true;
-        }
-        else {
-            itr->second.hot_count = delta;
-            itr->second.is_taken_hot = false;
-        }
+//VOID Fini2(INT32 code, VOID* v) {
+//    std::ofstream output_file("count.csv", std::ofstream::out);
+//    std::vector<std::pair<ADDRINT, branch_taken>> vec;
+//    for (auto itr = branch_taken_map.begin(); itr != branch_taken_map.end(); ++itr) {
+//        vec.push_back(*itr);
+//    }
+//    sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, branch_taken>& a, std::pair<ADDRINT, branch_taken>& b) {return a.second.count > b.second.count; });
+//    for (size_t i = 0; i < vec.size(); i++) {
+//        output_file << "0x" << std::hex << vec[i].first << ", 0x" << std::hex << vec[i].second.target_address << ", "
+//            << std::dec << vec[i].second.count  << endl;
+//    }
+//}
+
+VOID Fini3(INT32 code, VOID* v) {
+    std::ofstream output_file("rtn-output.csv", std::ofstream::out);
+    std::vector<std::pair<ADDRINT, rtn>> vec;
+    for (auto itr = rtn_map.begin(); itr != rtn_map.end(); ++itr) {
+        std::cout << itr->second.name << endl;
         vec.push_back(*itr);
     }
-    sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, branch>& a, std::pair<ADDRINT, branch>& b) {return a.second.hot_count > b.second.hot_count; });
+    sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, rtn>& a, std::pair<ADDRINT, rtn>& b) {return a.second.ins_count > b.second.ins_count; });
     for (size_t i = 0; i < vec.size(); i++) {
-        output_file << "0x" << std::hex << vec[i].first << ", 0x" << std::hex << vec[i].second.target_address << ", "
-            << std::dec << vec[i].second.run_count << ", " << vec[i].second.jump_count << ", " << vec[i].second.is_taken_hot << endl;
+        output_file << vec[i].second.name << ", 0x" << std::hex << vec[i].first << ", "
+        << std::dec << vec[i].second.ins_count << ", " << vec[i].second.call_count << ", "
+        << vec[i].second.is_recursive << ", " << vec[i].second.dominate_call() << endl;
     }
 }
 /* ===================================================================== */
@@ -321,6 +406,50 @@ bool get_top_ten_rtn(IMG main_img) {
     input_file.close();
     return true;
 }
+
+/*
+*   get_top_ten_rtn function:
+*       The function fetches from the csv file, the top 10 in number of instructions of routines
+*       from the main executable image. The result is inserted into top_ten_rtn vector.
+*/
+//bool get_top_ten_jumps(IMG main_img) {
+//    std::ifstream input_file("count.csv");
+//    if (!input_file.is_open()) {
+//        /* Failed to open. */
+//        return false;
+//    }
+//    std::string line;
+//    while (std::getline(input_file, line)) {
+//        std::vector<std::string> temp_line = split(line, ',');
+//        UINT64 count = std::stoi(temp_line[2]);
+//        ADDRINT addr_myself, addr_target;
+//        std::istringstream myself_in_hex(temp_line[0]);
+//        myself_in_hex >> std::hex >> addr_myself;
+//        std::istringstream target_in_hex(temp_line[1]);
+//        target_in_hex >> std::hex >> addr_target;
+//        IMG img = IMG_FindByAddress(addr_myself);
+//        if (IMG_Valid(img)) {
+//            if (IMG_IsMainExecutable(img)) {
+//                if (!in_top_ten_jumps(addr_myself)) {
+//                    branch_taken obj(addr_target);
+//                    if (top_ten_jumps.size() < 10) {
+//                        top_ten_jumps.push_back(std::pair<ADDRINT, branch_taken>(addr_myself, obj));
+//                        sort(top_ten_jumps.begin(), top_ten_jumps.end(), [=](std::pair<ADDRINT, branch_taken>& a, std::pair<ADDRINT, branch_taken>& b) {return a.second.count < b.second.count; });
+//                    }
+//                    else {
+//                        if (count > top_ten_jumps[0].second.count) {
+//                            top_ten_jumps.erase(top_ten_jumps.begin());
+//                            top_ten_jumps.push_back(std::pair<ADDRINT, branch_taken>(addr_myself, obj));
+//                            sort(top_ten_jumps.begin(), top_ten_jumps.end(), [=](std::pair<ADDRINT, branch_taken>& a, std::pair<ADDRINT, branch_taken>& b) {return a.second.count < b.second.count; });
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    }
+//    input_file.close();
+//    return true;
+//}
 /* ===================================================================== */
 
 /* ============================================ */
@@ -339,6 +468,9 @@ VOID ImageLoad(IMG img, VOID* v)
     if (!get_top_ten_rtn(img)) {
         return;
     }
+    /*if (!get_top_ten_jumps(img)) {
+        return;
+    }*/
     int rc = 0;
 
     // step 2: Check size of executable sections and allocate required memory:	
@@ -415,8 +547,10 @@ int main(int argc, char* argv[])
     }
     else if (KnobProf) {
         /* JIT Mode */
-        INS_AddInstrumentFunction(Instruction2, 0);
-        PIN_AddFiniFunction(Fini2, 0);
+        INS_AddInstrumentFunction(Instruction, 0);
+        //INS_AddInstrumentFunction(Instruction3, 0);
+        PIN_AddFiniFunction(Fini, 0);
+        PIN_AddFiniFunction(Fini3, 0);
         // Never returns
         PIN_StartProgram();
     }

@@ -83,6 +83,17 @@ KNOB<BOOL>   KnobProf(KNOB_MODE_WRITEONCE, "pintool",
 /* ===================================================================== */
 /* Global Variables */
 /* ===================================================================== */
+
+//class branch_taken {
+//public:
+//	ADDRINT target_address;
+//	UINT64 count;
+//	branch_taken() :target_address((ADDRINT)0), count(0) {}
+//	branch_taken(ADDRINT target_addr) :target_address(target_addr), count(0) {}
+//	branch_taken(ADDRINT target_addr, UINT64 new_count) :target_address(target_addr), count(new_count) {}
+//	~branch_taken() {}
+//};
+
 std::ofstream* out = 0;
 
 // For XED:
@@ -149,6 +160,30 @@ bool in_top_ten(ADDRINT rtn_address) {
 	return false;
 }
 /*HW3*/
+
+typedef struct {
+	xed_decoded_inst_t data;
+	ADDRINT addr;
+	USIZE size;
+} xed_ins_to_translate_t;
+//std::vector<std::pair<ADDRINT, branch_taken>> top_ten_jumps;
+//bool in_top_ten_jumps(ADDRINT jump_address) {
+//	for (auto itr = top_ten_jumps.begin(); itr != top_ten_jumps.end(); ++itr) {
+//		if (itr->first == jump_address) {
+//			return true;
+//		}
+//	}
+//	return false;
+//}
+//bool is_rtn_of_top_ten_jumps(ADDRINT rtn_address) {
+//	for (auto itr = top_ten_jumps.begin(); itr != top_ten_jumps.end(); ++itr) {
+//		RTN x = RTN_FindByAddress(itr->first);
+//		if (RTN_Valid(x) && RTN_Address(x) == rtn_address) {
+//			return true;
+//		}
+//	}
+//	return false;
+//}
 
 /* ============================================================= */
 /* Service dump routines                                         */
@@ -768,16 +803,53 @@ int find_candidate_rtns_for_translation(IMG img)
 /*HW3*/
 			ADDRINT rtn_addr = RTN_Address(rtn);
 			if(!in_top_ten(rtn_addr)){
+			//if(RTN_Name(rtn) != "BZ2_compressBlock"){
 				/* Only translate the top ten routine. */
 				continue;
 			}
-			translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;		
+			translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;
 /*HW3*/
-
+			//ADDRINT rtn_addr = RTN_Address(rtn);
+			//if(!is_rtn_of_top_ten_jumps(rtn_addr)){
+			//	/* Only translate the routine of the top ten branches. */
+			//	continue;
+			//}
+			//translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;	
 			translated_rtn[translated_rtn_num].rtn_size = RTN_Size(rtn);
 			translated_rtn[translated_rtn_num].instr_map_entry = num_of_instr_map_entries;
 			translated_rtn[translated_rtn_num].isSafeForReplacedProbe = true;	
+			//std::vector<xed_ins_to_translate_t> xedds;
+			//RTN x = RTN_FindByName(img, "BZ2_bsInitWrite");
+			//if (!RTN_Valid(x)) {
+			//	translated_rtn[translated_rtn_num].instr_map_entry = -1;
+			//	continue;
+			//}
+			//bool error2 = false;
+			//RTN_Open(x);
+			//for (INS x_i = RTN_InsHead(x); INS_Valid(x_i) && !INS_IsRet(x_i); x_i = INS_Next(x_i)) {
+			//	xed_ins_to_translate_t new_xed;
+			//	new_xed.addr = INS_Address(x_i);
+			//	new_xed.size = INS_Size(x_i);
+			//	xed_error_enum_t xed_code;
 
+			//	xed_decoded_inst_zero_set_mode(&(new_xed.data), &dstate);
+
+			//	xed_code = xed_decode(&(new_xed.data), reinterpret_cast<UINT8*>(new_xed.addr), max_inst_len);
+			//	if (xed_code != XED_ERROR_NONE) {
+			//		cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << new_xed.addr << endl;
+			//		translated_rtn[translated_rtn_num].instr_map_entry = -1;
+			//		break;
+			//	}
+			//	xedds.push_back(new_xed);
+			//	//// Add instr into instr map:
+			//	//rc = add_new_instr_entry(&xedd, INS_Address(ins), INS_Size(ins));
+			//	//if (rc < 0) {
+			//	//	cerr << "ERROR: failed during instructon translation." << endl;
+			//	//	translated_rtn[translated_rtn_num].instr_map_entry = -1;
+			//	//	break;
+			//	//}
+			//}
+			//RTN_Close(x);
 			// Open the RTN.
 			RTN_Open( rtn );              
 
@@ -789,29 +861,63 @@ int find_candidate_rtns_for_translation(IMG img)
 					cerr << "0x" << hex << INS_Address(ins) << ": " << INS_Disassemble(ins) <<  endl;
 					//xed_print_hex_line(reinterpret_cast<UINT8*>(INS_Address (ins)), INS_Size(ins));				   			
 				}				
+				//if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins) &&
+				//	RTN_FindNameByAddress(INS_DirectControlFlowTargetAddress(ins)) == "BZ2_bsInitWrite") {
+				//	for (size_t i = 0; i < xedds.size(); i++) {
+				//		// Add instr into instr map:
+				//		rc = add_new_instr_entry(&(xedds[i].data), xedds[i].addr, xedds[i].size);
+				//		if (rc < 0) {
+				//			cerr << "ERROR: failed during instructon translation." << endl;
+				//			translated_rtn[translated_rtn_num].instr_map_entry = -1;
+				//			error2 = true;
+				//			break;
+				//		}
+				//	}
+				//	if (error2) {
+				//		break;
+				//	}
+				//}
+				//else {
+					ADDRINT addr = INS_Address(ins);
 
-				ADDRINT addr = INS_Address(ins);
-                			
-			    xed_decoded_inst_t xedd;
-			    xed_error_enum_t xed_code;							
-	            
-				xed_decoded_inst_zero_set_mode(&xedd,&dstate); 
+					xed_decoded_inst_t xedd;
+					xed_error_enum_t xed_code;
 
-				xed_code = xed_decode(&xedd, reinterpret_cast<UINT8*>(addr), max_inst_len);
-				if (xed_code != XED_ERROR_NONE) {
-					cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << addr << endl;
-					translated_rtn[translated_rtn_num].instr_map_entry = -1;
-					break;
-				}
+					xed_decoded_inst_zero_set_mode(&xedd, &dstate);
 
-				// Add instr into instr map:
-				rc = add_new_instr_entry(&xedd, INS_Address(ins), INS_Size(ins));
-				if (rc < 0) {
-					cerr << "ERROR: failed during instructon translation." << endl;
-					translated_rtn[translated_rtn_num].instr_map_entry = -1;
-					break;
-				}
+					xed_code = xed_decode(&xedd, reinterpret_cast<UINT8*>(addr), max_inst_len);
+					if (xed_code != XED_ERROR_NONE) {
+						cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << addr << endl;
+						translated_rtn[translated_rtn_num].instr_map_entry = -1;
+						break;
+					}
+
+					// Add instr into instr map:
+					rc = add_new_instr_entry(&xedd, INS_Address(ins), INS_Size(ins));
+					if (rc < 0) {
+						cerr << "ERROR: failed during instructon translation." << endl;
+						translated_rtn[translated_rtn_num].instr_map_entry = -1;
+						break;
+					}
+				//}
                 
+				//Assumption of how it will be to inline
+				//if (ins_is_call_to_inline(ins)) {
+				//	RTN x = rtn_from_call(ins);
+				//	RTN_Open(x);
+				//	for (INS ins_x = RTN_InsHead(x); INS_Valid(ins_x); ins_x = INS_Next(ins_x)) {
+				//		if (INS_IsRet(ins_x)) {
+				//			if (ins_x == RTN_InsTail(x)) {
+				//				continue;
+				//			}
+				//			/* Need to turn the ret instruction into jump.
+				//			*	The target address of the new jump, is the return address, where as is saved on the stack.
+				//			*/
+				//		}
+				//	}
+				//	RTN_Close(x);
+				//}
+
                 /*
                 * // Example of adding a jump to a following additional nop instruction
                 * // into the TC:
@@ -877,7 +983,6 @@ int find_candidate_rtns_for_translation(IMG img)
 
 		 } // end for RTN..
 	} // end for SEC...
-
 
 	return 0;
 }
