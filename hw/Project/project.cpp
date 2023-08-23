@@ -21,7 +21,7 @@ using std::endl;
 /* ===================================================================== */
 /* Global Variables */
 /* ===================================================================== */
-const std::string NO_DOMINATE_CALL("NO_DOMINATE_CALL");
+const ADDRINT NO_DOMINATE_CALL = (ADDRINT)0;
 
 class rtn {
 public:
@@ -29,45 +29,28 @@ public:
     UINT64 ins_count;
     UINT64 call_count;
     bool is_recursive;
-    std::vector<std::pair<std::string, UINT64>> caller_list;
+    std::map<ADDRINT, UINT64> caller_map;
     rtn() :name(""), ins_count(0), call_count(0), is_recursive(false) {}
     rtn(const std::string new_name) :name(new_name), ins_count(0), call_count(0), is_recursive(false) {}
-    bool isCallerExist(std::string caller_name) {
-        for (size_t i = 0; i < this->caller_list.size(); i++) {
-            if (this->caller_list[i].first == caller_name) {
-                return true;
-            }
-        }
-        return false;
+    bool isCallerExist(ADDRINT caller_address) {
+        return (!(this->caller_map.find(caller_address) == this->caller_map.end()));
     }
-    
-    std::string dominate_call() {
-        if (this->caller_list.empty()) {
+    ADDRINT dominate_call() {
+        if (this->caller_map.empty()) {
             return NO_DOMINATE_CALL;
         }
-        sort(this->caller_list.begin(), this->caller_list.end(),
-            [=](std::pair<std::string, UINT64>& a, std::pair<std::string, UINT64>& b) {return a.second > b.second; });
-        for (size_t i = 1; i < this->caller_list.size(); i++) {
-            if (this->caller_list[i].second == this->caller_list[0].second) {
+        std::vector<std::pair<ADDRINT, UINT64>> vec;
+        for (auto itr = this->caller_map.begin(); itr != this->caller_map.end(); ++itr) {
+            vec.push_back(*itr);
+        }
+        sort(vec.begin(), vec.end(),
+            [=](std::pair<ADDRINT, UINT64>& a, std::pair<ADDRINT, UINT64>& b) {return a.second > b.second; });
+        for (size_t i = 1; i < vec.size(); i++) {
+            if (vec[i].second == vec[0].second) {
                 return NO_DOMINATE_CALL;
             }
         }
-        return this->caller_list[0].first;
-    }
-    bool new_caller(std::string rtn_name) {
-        if (this->isCallerExist(rtn_name)) {
-            return false;
-        }
-        this->caller_list.push_back(std::pair<std::string, UINT64>(rtn_name, 0));
-        return true;
-    }
-    UINT64* caller_counter_ptr(std::string caller_name) {
-        for (size_t i = 0; i < this->caller_list.size(); i++) {
-            if (this->caller_list[i].first == caller_name) {
-                return &(this->caller_list[i].second);
-            }
-        }
-        return nullptr;
+        return vec[0].first;
     }
     ~rtn() {}
 };
@@ -175,17 +158,36 @@ VOID Instruction(INS ins, VOID* v) {
         }
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);
         if (INS_IsDirectControlFlow(ins)) {
-            if (INS_IsCall(ins)) {
+            if (INS_IsCall(ins) && !INS_IsSyscall(ins)) {
                 ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
                 if (target_address == rtn_address) {
                     rtn_map[rtn_address].is_recursive = true;
                 }
                 else {
-                    rtn_map[target_address].new_caller(rtn_obj.name);
-                    UINT64* counter_ptr = rtn_map[target_address].caller_counter_ptr(rtn_obj.name);
-                    if (counter_ptr) {
-                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, counter_ptr, IARG_END);
+                    RTN target_rtn_pin = RTN_FindByAddress(target_address);
+                    if (RTN_Valid(target_rtn_pin)) {
+                        IMG img_target = IMG_FindByAddress(target_address);
+                        if (!IMG_Valid(img_target)) {
+                            return;
+                        }
+                        if (!IMG_IsMainExecutable(img_target)) {
+                            return;
+                        }
+                        std::vector<std::string> check_is_plt_from_libc = split(RTN_Name(target_rtn_pin), '@');
+                        if (check_is_plt_from_libc.size() > 1) {
+                            return;
+                        }
+                        rtn target_rtn(check_is_plt_from_libc[0]);
+                        if (!isRtnExist(target_address)) {
+                            rtn_map.emplace(target_address, target_rtn);
+                        }
+                        if (!rtn_map[target_address].isCallerExist(rtn_address)) {
+                            rtn_map[target_address].caller_map.emplace(rtn_address, 0);
+                        }
+                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
+                            &(rtn_map[target_address].caller_map[rtn_address]), IARG_END);
                     }
+                    
                 }
             }
             else {
@@ -267,40 +269,40 @@ VOID Instruction(INS ins, VOID* v) {
 //        }
 //    }
 //}
-VOID Instruction3(INS ins, VOID* v) {
-    RTN rtn_arg = INS_Rtn(ins);
-    if (RTN_Valid(rtn_arg)) {
-        ADDRINT rtn_address = RTN_Address(rtn_arg);
-        IMG img = IMG_FindByAddress(rtn_address);
-        if (!IMG_Valid(img)) {
-            return;
-        }
-        if (!IMG_IsMainExecutable(img)) {
-            return;
-        }
-        rtn rtn_obj(RTN_Name(rtn_arg));
-        if (!isRtnExist(rtn_address)) {
-            rtn_map.emplace(rtn_address, rtn_obj);
-        }
-        /*if (rtn_address == INS_Address(ins)) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
-        }
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);*/
-        if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins)) {
-            ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
-            if (target_address == rtn_address) {
-                rtn_map[rtn_address].is_recursive = true;
-            }
-            else {
-                rtn_map[target_address].new_caller(rtn_obj.name);
-                UINT64* counter_ptr = rtn_map[target_address].caller_counter_ptr(rtn_obj.name);
-                if (counter_ptr) {
-                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, counter_ptr, IARG_END);
-                }
-            }
-        }
-    }
-}
+//VOID Instruction3(INS ins, VOID* v) {
+//    RTN rtn_arg = INS_Rtn(ins);
+//    if (RTN_Valid(rtn_arg)) {
+//        ADDRINT rtn_address = RTN_Address(rtn_arg);
+//        IMG img = IMG_FindByAddress(rtn_address);
+//        if (!IMG_Valid(img)) {
+//            return;
+//        }
+//        if (!IMG_IsMainExecutable(img)) {
+//            return;
+//        }
+//        rtn rtn_obj(RTN_Name(rtn_arg));
+//        if (!isRtnExist(rtn_address)) {
+//            rtn_map.emplace(rtn_address, rtn_obj);
+//        }
+//        /*if (rtn_address == INS_Address(ins)) {
+//            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
+//        }
+//        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);*/
+//        if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins)) {
+//            ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
+//            if (target_address == rtn_address) {
+//                rtn_map[rtn_address].is_recursive = true;
+//            }
+//            else {
+//                if (!rtn_map[target_address].isCallerExist(RTN_Name(rtn_arg))) {
+//                    rtn_map[target_address].caller_map.emplace(RTN_Name(rtn_arg), 0);
+//                }
+//                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
+//                    &(rtn_map[target_address].caller_map[RTN_Name(rtn_arg)]), IARG_END);
+//            }
+//        }
+//    }
+//}
 
 /* ===================================================================== */
 
@@ -348,14 +350,16 @@ VOID Fini3(INT32 code, VOID* v) {
     std::ofstream output_file("rtn-output.csv", std::ofstream::out);
     std::vector<std::pair<ADDRINT, rtn>> vec;
     for (auto itr = rtn_map.begin(); itr != rtn_map.end(); ++itr) {
-        std::cout << itr->second.name << endl;
         vec.push_back(*itr);
     }
     sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, rtn>& a, std::pair<ADDRINT, rtn>& b) {return a.second.ins_count > b.second.ins_count; });
     for (size_t i = 0; i < vec.size(); i++) {
-        output_file << vec[i].second.name << ", 0x" << std::hex << vec[i].first << ", "
-        << std::dec << vec[i].second.ins_count << ", " << vec[i].second.call_count << ", "
-        << vec[i].second.is_recursive << ", " << vec[i].second.dominate_call() << endl;
+        ADDRINT dominate_caller_addr = vec[i].second.dominate_call();
+        if (dominate_caller_addr != NO_DOMINATE_CALL) {
+            output_file << vec[i].second.name << ", 0x" << std::hex << vec[i].first << ", "
+                << std::dec << vec[i].second.ins_count << ", " << vec[i].second.call_count << ", "
+                << vec[i].second.is_recursive << ", " << rtn_map[dominate_caller_addr].name << endl;
+        }
     }
 }
 /* ===================================================================== */
