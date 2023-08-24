@@ -95,21 +95,20 @@ INT32 Usage()
 /* ===================================================================== */
 /* Analysis functions */
 /* ===================================================================== */
-VOID docount_ins(ADDRINT rtn_address) {
-    rtn_map[rtn_address].ins_count++;
+VOID docount_ins(UINT64* ptr_ins) {
+    (*ptr_ins)++;
 }
-VOID docount_rtn(ADDRINT rtn_address) {
-    rtn_map[rtn_address].call_count++;
+VOID docount_rtn(UINT64* ptr_call) {
+    (*ptr_call)++;
 }
 VOID docount_branch_iteration(ADDRINT loop_address) {
     loop_map[loop_address].countSeen[loop_map[loop_address].countLoopInvoked]++;
     loop_map[loop_address].totalCountSeen++;
 }
-VOID docount_branch_invocation(ADDRINT loop_address) {
-    loop_map[loop_address].countLoopInvoked++;
-    loop_map[loop_address].countSeen.push_back(0);
+VOID docount_branch_invocation(UINT64* ptr_invoked, std::vector<UINT64>* ptr_countSeenArray) {
+    (*ptr_invoked)++;
+    (*ptr_countSeenArray).push_back(0);
 }
-
 /* ===================================================================== */
 
 /*
@@ -136,9 +135,9 @@ VOID Instruction(INS ins, VOID* v) {
             rtn_map.emplace(rtn_address, rtn_obj);
         }
         if (rtn_address == INS_Address(ins)) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_ADDRINT, rtn_address, IARG_END);
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
         }
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_ADDRINT, rtn_address, IARG_END);
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);
         if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins)) {
             ADDRINT myself = INS_Address(ins);
             ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
@@ -154,7 +153,8 @@ VOID Instruction(INS ins, VOID* v) {
                         INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                     }
                     if (INS_IsValidForIpointAfter(ins)) {
-                        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
+                        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_PTR,
+                            &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
                     }
                 }
                 else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
@@ -171,7 +171,8 @@ VOID Instruction(INS ins, VOID* v) {
                         if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
                             && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
                             if (INS_IsValidForIpointTakenBranch(cond_jump)) {
-                                INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_ADDRINT, myself, IARG_END);
+                                INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_PTR,
+                                    &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
                             }
                             break;
                         }
@@ -187,7 +188,6 @@ VOID Instruction(INS ins, VOID* v) {
 VOID Fini(INT32 code, VOID* v) {
     std::ofstream output_file("loop-count.csv", std::ofstream::out);
     std::vector<std::pair<ADDRINT, loop>> vec;
-    std::vector<ADDRINT> v_r;
     for (auto itr = loop_map.begin(); itr != loop_map.end(); ++itr) {
         if (itr->second.countLoopInvoked) {
             vec.push_back(*itr);
