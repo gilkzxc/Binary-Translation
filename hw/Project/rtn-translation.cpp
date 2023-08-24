@@ -148,7 +148,11 @@ typedef struct {
 
 translated_rtn_t *translated_rtn;
 int translated_rtn_num = 0;
-
+typedef struct {
+	xed_decoded_inst_t data;
+	ADDRINT addr;
+	USIZE size;
+} xed_ins_to_translate_t;
 /*HW3*/
 std::vector<std::pair<ADDRINT, UINT64>> top_ten_rtn;
 bool in_top_ten(ADDRINT rtn_address) {
@@ -161,11 +165,18 @@ bool in_top_ten(ADDRINT rtn_address) {
 }
 /*HW3*/
 
-typedef struct {
-	xed_decoded_inst_t data;
-	ADDRINT addr;
-	USIZE size;
-} xed_ins_to_translate_t;
+/*Project*/
+std::map<ADDRINT, std::vector<ADDRINT>> inline_functions_candidates_for_top_ten_rtn;
+std::map<ADDRINT, std::vector<xed_ins_to_translate_t>> xedds_by_candidate_to_inline;
+bool isInlineCandidateExist(ADDRINT rtn_address, ADDRINT candidate_address) {
+	for (size_t i = 0; i < inline_functions_candidates_for_top_ten_rtn[rtn_address].size(); i++) {
+		if (inline_functions_candidates_for_top_ten_rtn[rtn_address][i] == candidate_address) {
+			return true;
+		}
+	}
+	return false;
+}
+/*Project*/
 //std::vector<std::pair<ADDRINT, branch_taken>> top_ten_jumps;
 //bool in_top_ten_jumps(ADDRINT jump_address) {
 //	for (auto itr = top_ten_jumps.begin(); itr != top_ten_jumps.end(); ++itr) {
@@ -777,7 +788,31 @@ int fix_instructions_displacements()
    return 0;
  }
 
-
+int uncondJumpGenerator_from_instr_map(int instr_index, xed_int32_t disp) {
+	// Create an unconditional jump instruction:
+	ADDRINT originalAddress = instr_map[instr_index].orig_ins_addr;
+	xed_encoder_instruction_t  enc_instr;
+	xed_inst1(&enc_instr, dstate,
+		XED_ICLASS_JMP, 64,
+		xed_relbr(disp, 32));
+	xed_encoder_request_t enc_req;
+	xed_encoder_request_zero_set_mode(&enc_req, &dstate);
+	xed_bool_t convert_ok = xed_convert_to_encoder_request(&enc_req, &enc_instr);
+	if (!convert_ok) {
+		cerr << "conversion to encode request failed" << endl;
+		return -1;
+	}
+	unsigned int ilen = XED_MAX_INSTRUCTION_BYTES;
+	unsigned int olen = 0;
+	xed_error_enum_t xed_error = xed_encode(&enc_req,
+		reinterpret_cast<UINT8*>(instr_map[instr_index].encoded_ins), ilen, &olen);
+	if (xed_error != XED_ERROR_NONE) {
+		cerr << "ENCODE ERROR: " << xed_error_enum_t2str(xed_error) << endl;
+		return -1;
+	}
+	instr_map[instr_index].orig_targ_addr = originalAddress + olen;
+	return 0;
+}
 /*****************************************/
 /* find_candidate_rtns_for_translation() */
 /*****************************************/
@@ -803,10 +838,10 @@ int find_candidate_rtns_for_translation(IMG img)
 /*HW3*/
 			ADDRINT rtn_addr = RTN_Address(rtn);
 			if(!in_top_ten(rtn_addr)){
-			//if(RTN_Name(rtn) != "BZ2_compressBlock"){
 				/* Only translate the top ten routine. */
 				continue;
 			}
+			//if(inline_functions_candidates_for_top_ten_rtn[rtn_address].size() < 1)
 			translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;
 /*HW3*/
 			//ADDRINT rtn_addr = RTN_Address(rtn);
@@ -817,39 +852,43 @@ int find_candidate_rtns_for_translation(IMG img)
 			//translated_rtn[translated_rtn_num].rtn_addr = rtn_addr;	
 			translated_rtn[translated_rtn_num].rtn_size = RTN_Size(rtn);
 			translated_rtn[translated_rtn_num].instr_map_entry = num_of_instr_map_entries;
-			translated_rtn[translated_rtn_num].isSafeForReplacedProbe = true;	
-			//std::vector<xed_ins_to_translate_t> xedds;
-			//RTN x = RTN_FindByName(img, "BZ2_bsInitWrite");
-			//if (!RTN_Valid(x)) {
-			//	translated_rtn[translated_rtn_num].instr_map_entry = -1;
-			//	continue;
-			//}
-			//bool error2 = false;
-			//RTN_Open(x);
-			//for (INS x_i = RTN_InsHead(x); INS_Valid(x_i) && !INS_IsRet(x_i); x_i = INS_Next(x_i)) {
-			//	xed_ins_to_translate_t new_xed;
-			//	new_xed.addr = INS_Address(x_i);
-			//	new_xed.size = INS_Size(x_i);
-			//	xed_error_enum_t xed_code;
-
-			//	xed_decoded_inst_zero_set_mode(&(new_xed.data), &dstate);
-
-			//	xed_code = xed_decode(&(new_xed.data), reinterpret_cast<UINT8*>(new_xed.addr), max_inst_len);
-			//	if (xed_code != XED_ERROR_NONE) {
-			//		cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << new_xed.addr << endl;
-			//		translated_rtn[translated_rtn_num].instr_map_entry = -1;
-			//		break;
-			//	}
-			//	xedds.push_back(new_xed);
-			//	//// Add instr into instr map:
-			//	//rc = add_new_instr_entry(&xedd, INS_Address(ins), INS_Size(ins));
-			//	//if (rc < 0) {
-			//	//	cerr << "ERROR: failed during instructon translation." << endl;
-			//	//	translated_rtn[translated_rtn_num].instr_map_entry = -1;
-			//	//	break;
-			//	//}
-			//}
-			//RTN_Close(x);
+			translated_rtn[translated_rtn_num].isSafeForReplacedProbe = true;
+			bool error1 = false, error2 = false, finished_to_insert_inline_func = false;
+			ADDRINT last_inlined_func;
+			for (size_t i = 0; i < inline_functions_candidates_for_top_ten_rtn[rtn_addr].size(); i++) {
+				RTN x = RTN_FindByAddress(inline_functions_candidates_for_top_ten_rtn[rtn_addr][i]);
+				if (!RTN_Valid(x)) {
+					translated_rtn[translated_rtn_num].instr_map_entry = -1;
+					break;
+				}
+				RTN_Open(x);
+				for (INS x_i = RTN_InsHead(x); INS_Valid(x_i) && !INS_IsRet(x_i); x_i = INS_Next(x_i)) {
+					xed_ins_to_translate_t new_xed;
+					new_xed.addr = INS_Address(x_i);
+					new_xed.size = INS_Size(x_i);
+					xed_error_enum_t xed_code;
+					xed_decoded_inst_zero_set_mode(&(new_xed.data), &dstate);
+					xed_code = xed_decode(&(new_xed.data), reinterpret_cast<UINT8*>(new_xed.addr), max_inst_len);
+					if (xed_code != XED_ERROR_NONE) {
+						cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << new_xed.addr << endl;
+						translated_rtn[translated_rtn_num].instr_map_entry = -1;
+						error1 = true;
+						break;
+					}
+					if (xedds_by_candidate_to_inline.find(RTN_Address(x)) == xedds_by_candidate_to_inline.end()) {
+						xedds_by_candidate_to_inline[RTN_Address(x)].clear();
+					}
+					/* Adding new_xed to map of vector of xed */
+					xedds_by_candidate_to_inline[RTN_Address(x)].push_back(new_xed);
+				}
+				RTN_Close(x);
+				if (error1) {
+					break;
+				}
+			}
+			if (error1) {
+				//What to do?
+			}
 			// Open the RTN.
 			RTN_Open( rtn );              
 
@@ -861,23 +900,29 @@ int find_candidate_rtns_for_translation(IMG img)
 					cerr << "0x" << hex << INS_Address(ins) << ": " << INS_Disassemble(ins) <<  endl;
 					//xed_print_hex_line(reinterpret_cast<UINT8*>(INS_Address (ins)), INS_Size(ins));				   			
 				}				
-				//if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins) &&
-				//	RTN_FindNameByAddress(INS_DirectControlFlowTargetAddress(ins)) == "BZ2_bsInitWrite") {
-				//	for (size_t i = 0; i < xedds.size(); i++) {
-				//		// Add instr into instr map:
-				//		rc = add_new_instr_entry(&(xedds[i].data), xedds[i].addr, xedds[i].size);
-				//		if (rc < 0) {
-				//			cerr << "ERROR: failed during instructon translation." << endl;
-				//			translated_rtn[translated_rtn_num].instr_map_entry = -1;
-				//			error2 = true;
-				//			break;
-				//		}
-				//	}
-				//	if (error2) {
-				//		break;
-				//	}
-				//}
-				//else {
+				if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins)) {
+					ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
+					if (isInlineCandidateExist(rtn_addr, target_address)) {
+						for (size_t i = 0; i < xedds_by_candidate_to_inline[target_address].size(); i++) {
+							// Add instr into instr map:
+							rc = add_new_instr_entry(&(xedds_by_candidate_to_inline[target_address][i].data),
+								xedds_by_candidate_to_inline[target_address][i].addr,
+								xedds_by_candidate_to_inline[target_address][i].size);
+							if (rc < 0) {
+								cerr << "ERROR: failed during instructon translation." << endl;
+								translated_rtn[translated_rtn_num].instr_map_entry = -1;
+								error2 = true;
+								break;
+							}
+						}
+						if (error2) {
+							break;
+						}
+						finished_to_insert_inline_func = true;
+						last_inlined_func = target_address;
+					}
+				}
+				else {
 					ADDRINT addr = INS_Address(ins);
 
 					xed_decoded_inst_t xedd;
@@ -899,71 +944,69 @@ int find_candidate_rtns_for_translation(IMG img)
 						translated_rtn[translated_rtn_num].instr_map_entry = -1;
 						break;
 					}
-				//}
-                
-				//Assumption of how it will be to inline
-				//if (ins_is_call_to_inline(ins)) {
-				//	RTN x = rtn_from_call(ins);
-				//	RTN_Open(x);
-				//	for (INS ins_x = RTN_InsHead(x); INS_Valid(ins_x); ins_x = INS_Next(ins_x)) {
-				//		if (INS_IsRet(ins_x)) {
-				//			if (ins_x == RTN_InsTail(x)) {
-				//				continue;
-				//			}
-				//			/* Need to turn the ret instruction into jump.
-				//			*	The target address of the new jump, is the return address, where as is saved on the stack.
-				//			*/
-				//		}
-				//	}
-				//	RTN_Close(x);
-				//}
+					if (finished_to_insert_inline_func) {
+						finished_to_insert_inline_func = false;
+						ADDRINT new_return_address = instr_map[num_of_instr_map_entries - 1].new_ins_addr;
+						int index_of_first_ins = num_of_instr_map_entries - 1 - xedds_by_candidate_to_inline[last_inlined_func].size();
+						for (int i = (num_of_instr_map_entries - 1) - 1; i >= index_of_first_ins;i--) {
+							if (instr_map[i].category_enum == XED_CATEGORY_RET) {
+								/* Replace translated ret instruction with a uncond jump to new_return_address. */
+								xed_int32_t offset = (xed_int32_t)(new_return_address - instr_map[i].new_ins_addr);
+								int error_from_generator = uncondJumpGenerator_from_instr_map(i, offset);
+								if (error_from_generator < 0) {
+									/* Error handling */
+								}
+							}
+						}
+					}
+				}
 
-                /*
-                * // Example of adding a jump to a following additional nop instruction
-                * // into the TC:
-                * if (INS_IsNop(ins)) {
-                *   // Create a temporary NOP instruction as a placeholder and then modify 
-                *   // it to a jump instruction.
-				*   rc = add_new_instr_entry(&xedd, INS_Address(ins), INS_Size(ins));
-				*   if (rc < 0) {
-				*     cerr << "ERROR: failed during instructon translation." << endl;
-				*     translated_rtn[translated_rtn_num].instr_map_entry = -1;
-				*     break;
-				*   }
-                *   
-                *   // Create an unconditional jump instruction:
-                *   xed_encoder_instruction_t  enc_instr;
-                *   xed_inst1(&enc_instr, dstate, 
-			    *             XED_ICLASS_JMP, 64,
-                *             xed_relbr (0, 32));
-                *   
-                *   xed_encoder_request_t enc_req;
-                *   xed_encoder_request_zero_set_mode(&enc_req, &dstate);
-                *   xed_bool_t convert_ok = xed_convert_to_encoder_request(&enc_req, &enc_instr);
-                *   if (!convert_ok) {
-                *   	cerr << "conversion to encode request failed" << endl;
-                *   	return -1;
-                *   }
-                * 
-                *   unsigned int ilen = XED_MAX_INSTRUCTION_BYTES;
-                *   unsigned int olen = 0;
-                *   xed_error_enum_t xed_error = xed_encode(&enc_req, 
-                *             reinterpret_cast<UINT8*>(instr_map[num_of_instr_map_entries-1].encoded_ins), ilen, &olen);
-                *   if (xed_error != XED_ERROR_NONE) {
-                *   	cerr << "ENCODE ERROR: " << xed_error_enum_t2str(xed_error) << endl;
-                *     return -1;
-                *   }
-                *   instr_map[num_of_instr_map_entries-1].orig_targ_addr = INS_Address(ins) + olen;
-                * 
-                *   // Create another NOP instruction.
-				*   rc = add_new_instr_entry(&xedd, INS_Address(ins) + olen, INS_Size(ins));
-				*   if (rc < 0) {
-				*     cerr << "ERROR: failed during instructon translation." << endl;
-				*     translated_rtn[translated_rtn_num].instr_map_entry = -1;
-				*     break;
-				*   }
-                * }
-                */
+                
+     //            // Example of adding a jump to a following additional nop instruction
+     //            // into the TC:
+     //            if (INS_IsNop(ins)) {
+					//// Create a temporary NOP instruction as a placeholder and then modify 
+					//// it to a jump instruction.
+					//rc = add_new_instr_entry(&xedd, INS_Address(ins), INS_Size(ins));
+					//if (rc < 0) {
+					//	cerr << "ERROR: failed during instructon translation." << endl;
+					//	translated_rtn[translated_rtn_num].instr_map_entry = -1;
+					//	break;
+					//}
+     //              
+     //              // Create an unconditional jump instruction:
+     //              xed_encoder_instruction_t  enc_instr;
+     //              xed_inst1(&enc_instr, dstate, 
+			  //               XED_ICLASS_JMP, 64,
+     //                        xed_relbr (0, 32));
+     //              
+     //              xed_encoder_request_t enc_req;
+     //              xed_encoder_request_zero_set_mode(&enc_req, &dstate);
+     //              xed_bool_t convert_ok = xed_convert_to_encoder_request(&enc_req, &enc_instr);
+     //              if (!convert_ok) {
+     //              	cerr << "conversion to encode request failed" << endl;
+     //              	return -1;
+     //              }
+     //            
+     //              unsigned int ilen = XED_MAX_INSTRUCTION_BYTES;
+     //              unsigned int olen = 0;
+     //              xed_error_enum_t xed_error = xed_encode(&enc_req, 
+     //                        reinterpret_cast<UINT8*>(instr_map[num_of_instr_map_entries-1].encoded_ins), ilen, &olen);
+     //              if (xed_error != XED_ERROR_NONE) {
+     //              	cerr << "ENCODE ERROR: " << xed_error_enum_t2str(xed_error) << endl;
+     //                return -1;
+     //              }
+     //              instr_map[num_of_instr_map_entries-1].orig_targ_addr = INS_Address(ins) + olen;
+     //            
+     //              // Create another NOP instruction.
+				 //  rc = add_new_instr_entry(&xedd, INS_Address(ins) + olen, INS_Size(ins));
+				 //  if (rc < 0) {
+				 //    cerr << "ERROR: failed during instructon translation." << endl;
+				 //    translated_rtn[translated_rtn_num].instr_map_entry = -1;
+				 //    break;
+				 //  }
+     //            }
+                
                 
                 
                 

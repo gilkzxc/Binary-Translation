@@ -157,80 +157,46 @@ VOID Instruction(INS ins, VOID* v) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
         }
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);
-        if (INS_IsDirectControlFlow(ins)) {
-            if (INS_IsCall(ins) && !INS_IsSyscall(ins)) {
-                ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
-                if (target_address == rtn_address) {
-                    rtn_map[rtn_address].is_recursive = true;
+        if (INS_IsDirectControlFlow(ins) && !INS_IsCall(ins) && !INS_IsSyscall(ins)) {
+            ADDRINT myself = INS_Address(ins);
+            ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
+            if (target < myself) {
+                loop loop_obj(target, rtn_address);
+                if (!isLoopExist(myself)) {
+                    loop_map.emplace(myself, loop_obj);
+                    loop_map[myself].countSeen.push_back(0);
                 }
-                else {
-                    RTN target_rtn_pin = RTN_FindByAddress(target_address);
-                    if (RTN_Valid(target_rtn_pin)) {
-                        IMG img_target = IMG_FindByAddress(target_address);
-                        if (!IMG_Valid(img_target)) {
-                            return;
-                        }
-                        if (!IMG_IsMainExecutable(img_target)) {
-                            return;
-                        }
-                        std::vector<std::string> check_is_plt_from_libc = split(RTN_Name(target_rtn_pin), '@');
-                        if (check_is_plt_from_libc.size() > 1) {
-                            return;
-                        }
-                        rtn target_rtn(check_is_plt_from_libc[0]);
-                        if (!isRtnExist(target_address)) {
-                            rtn_map.emplace(target_address, target_rtn);
-                        }
-                        if (!rtn_map[target_address].isCallerExist(rtn_address)) {
-                            rtn_map[target_address].caller_map.emplace(rtn_address, 0);
-                        }
-                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
-                            &(rtn_map[target_address].caller_map[rtn_address]), IARG_END);
+                if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
+                    /* Handles 1st type loops, with single cond jump backwards. */
+                    if (INS_IsValidForIpointTakenBranch(ins)) {
+                        INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
                     }
-                    
+                    if (INS_IsValidForIpointAfter(ins)) {
+                        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_PTR,
+                            &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
+                    }
                 }
-            }
-            else {
-                ADDRINT myself = INS_Address(ins);
-                ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
-                if (target < myself) {
-                    loop loop_obj(target, rtn_address);
-                    if (!isLoopExist(myself)) {
-                        loop_map.emplace(myself, loop_obj);
-                        loop_map[myself].countSeen.push_back(0);
+                else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
+                    /* Handles 2nd type loops, with a single cond' jump forward
+                        and a single uncond' jump backwards to the address of myself.
+                    */
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
+                    RTN_Open(rtn_arg);
+                    INS start = RTN_InsHead(rtn_arg);
+                    for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {
+                        ;
                     }
-                    if (INS_Category(ins) == XED_CATEGORY_COND_BR) {
-                        /* Handles 1st type loops, with single cond jump backwards. */
-                        if (INS_IsValidForIpointTakenBranch(ins)) {
-                            INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
-                        }
-                        if (INS_IsValidForIpointAfter(ins)) {
-                            INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)docount_branch_invocation, IARG_PTR,
-                                &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
-                        }
-                    }
-                    else if (INS_Category(ins) == XED_CATEGORY_UNCOND_BR) {
-                        /* Handles 2nd type loops, with a single cond' jump forward
-                            and a single uncond' jump backwards to the address of myself.
-                        */
-                        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_branch_iteration, IARG_ADDRINT, myself, IARG_END);
-                        RTN_Open(rtn_arg);
-                        INS start = RTN_InsHead(rtn_arg);
-                        for (; INS_Valid(start) && INS_Address(start) < target; start = INS_Next(start)) {
-                            ;
-                        }
-                        for (INS cond_jump = start; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
-                            if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
-                                && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
-                                if (INS_IsValidForIpointTakenBranch(cond_jump)) {
-                                    INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_PTR,
-                                        &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
-                                }
-                                break;
+                    for (INS cond_jump = start; INS_Valid(cond_jump); cond_jump = INS_Next(cond_jump)) {
+                        if (INS_IsDirectControlFlow(cond_jump) && !INS_IsCall(cond_jump) && INS_Category(cond_jump) == XED_CATEGORY_COND_BR
+                            && INS_DirectControlFlowTargetAddress(cond_jump) > myself) {
+                            if (INS_IsValidForIpointTakenBranch(cond_jump)) {
+                                INS_InsertCall(cond_jump, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_branch_invocation, IARG_PTR,
+                                    &(loop_map[myself].countLoopInvoked), IARG_PTR, &(loop_map[myself].countSeen), IARG_END);
                             }
+                            break;
                         }
-                        RTN_Close(rtn_arg);
                     }
+                    RTN_Close(rtn_arg);
                 }
             }
         }
@@ -269,40 +235,55 @@ VOID Instruction(INS ins, VOID* v) {
 //        }
 //    }
 //}
-//VOID Instruction3(INS ins, VOID* v) {
-//    RTN rtn_arg = INS_Rtn(ins);
-//    if (RTN_Valid(rtn_arg)) {
-//        ADDRINT rtn_address = RTN_Address(rtn_arg);
-//        IMG img = IMG_FindByAddress(rtn_address);
-//        if (!IMG_Valid(img)) {
-//            return;
-//        }
-//        if (!IMG_IsMainExecutable(img)) {
-//            return;
-//        }
-//        rtn rtn_obj(RTN_Name(rtn_arg));
-//        if (!isRtnExist(rtn_address)) {
-//            rtn_map.emplace(rtn_address, rtn_obj);
-//        }
-//        /*if (rtn_address == INS_Address(ins)) {
-//            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR, &(rtn_map[rtn_address].call_count), IARG_END);
-//        }
-//        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_ins, IARG_PTR, &(rtn_map[rtn_address].ins_count), IARG_END);*/
-//        if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins)) {
-//            ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
-//            if (target_address == rtn_address) {
-//                rtn_map[rtn_address].is_recursive = true;
-//            }
-//            else {
-//                if (!rtn_map[target_address].isCallerExist(RTN_Name(rtn_arg))) {
-//                    rtn_map[target_address].caller_map.emplace(RTN_Name(rtn_arg), 0);
-//                }
-//                INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
-//                    &(rtn_map[target_address].caller_map[RTN_Name(rtn_arg)]), IARG_END);
-//            }
-//        }
-//    }
-//}
+VOID Instruction3(INS ins, VOID* v) {
+    RTN rtn_arg = INS_Rtn(ins);
+    if (RTN_Valid(rtn_arg)) {
+        ADDRINT rtn_address = RTN_Address(rtn_arg);
+        IMG img = IMG_FindByAddress(rtn_address);
+        if (!IMG_Valid(img)) {
+            return;
+        }
+        if (!IMG_IsMainExecutable(img)) {
+            return;
+        }
+        rtn rtn_obj(RTN_Name(rtn_arg));
+        if (!isRtnExist(rtn_address)) {
+            rtn_map.emplace(rtn_address, rtn_obj);
+        }
+        if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins) && !INS_IsSyscall(ins)) {
+            ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
+            if (target_address == rtn_address) {
+                rtn_map[rtn_address].is_recursive = true;
+            }
+            else {
+                RTN target_rtn_pin = RTN_FindByAddress(target_address);
+                if (RTN_Valid(target_rtn_pin)) {
+                    IMG img_target = IMG_FindByAddress(target_address);
+                    if (!IMG_Valid(img_target)) {
+                        return;
+                    }
+                    if (!IMG_IsMainExecutable(img_target)) {
+                        return;
+                    }
+                    std::vector<std::string> check_is_plt_from_libc = split(RTN_Name(target_rtn_pin), '@');
+                    if (check_is_plt_from_libc.size() > 1) {
+                        return;
+                    }
+                    rtn target_rtn(check_is_plt_from_libc[0]);
+                    if (!isRtnExist(target_address)) {
+                        rtn_map.emplace(target_address, target_rtn);
+                    }
+                    if (!rtn_map[target_address].isCallerExist(rtn_address)) {
+                        rtn_map[target_address].caller_map.emplace(rtn_address, 0);
+                    }
+                    INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
+                        &(rtn_map[target_address].caller_map[rtn_address]), IARG_END);
+                }
+
+            }
+        }
+    }
+}
 
 /* ===================================================================== */
 
@@ -358,7 +339,7 @@ VOID Fini3(INT32 code, VOID* v) {
         if (dominate_caller_addr != NO_DOMINATE_CALL) {
             output_file << vec[i].second.name << ", 0x" << std::hex << vec[i].first << ", "
                 << std::dec << vec[i].second.ins_count << ", " << vec[i].second.call_count << ", "
-                << vec[i].second.is_recursive << ", " << rtn_map[dominate_caller_addr].name << endl;
+                << vec[i].second.is_recursive << ", 0x" << dominate_caller_addr << endl;
         }
     }
 }
@@ -454,6 +435,40 @@ bool get_top_ten_rtn(IMG main_img) {
 //    input_file.close();
 //    return true;
 //}
+
+
+bool get_inline_functions_candidates_for_top_ten_rtn(IMG main_img) {
+    std::ifstream input_file("rtn-output.csv");
+    if (!input_file.is_open()) {
+        /* Failed to open. */
+        return false;
+    }
+    std::string line;
+    while (std::getline(input_file, line)) {
+        std::vector<std::string> temp_line = split(line, ',');
+        UINT64 ins_count = std::stoi(temp_line[2]), call_count = std::stoi(temp_line[3]);
+        bool is_recorsive = (bool)std::stoi(temp_line[4]);
+        if (is_recorsive || !ins_count || !call_count) {
+            continue;
+        }
+        ADDRINT candidate_addr, top_rtn_addr;
+        std::istringstream candidate_addr_in_hex(temp_line[1]);
+        candidate_addr_in_hex >> std::hex >> candidate_addr;
+        std::istringstream top_rtn_addr_in_hex(temp_line[5]);
+        top_rtn_addr_in_hex >> std::hex >> top_rtn_addr;
+        /* Need to exclude recursive functions, fucntion without runtime instructions and calls. */
+        IMG candidate_img = IMG_FindByAddress(candidate_addr), top_rtn_img = IMG_FindByAddress(top_rtn_addr);
+        if (IMG_Valid(candidate_img) && IMG_IsMainExecutable(candidate_img) 
+            && IMG_Valid(top_rtn_img) && IMG_IsMainExecutable(top_rtn_img)
+            && in_top_ten(top_rtn_addr)) {
+            if (!isInlineCandidateExist(top_rtn_addr, candidate_addr)) {
+                inline_functions_candidates_for_top_ten_rtn[top_rtn_addr].push_back(candidate_addr);
+            }
+        }
+    }
+    input_file.close();
+    return true;
+}
 /* ===================================================================== */
 
 /* ============================================ */
@@ -470,6 +485,9 @@ VOID ImageLoad(IMG img, VOID* v)
         return;
     // Step 1: Fetch top ten routines. On failer exit ImageLoad.
     if (!get_top_ten_rtn(img)) {
+        return;
+    }
+    if (!get_inline_functions_candidates_for_top_ten_rtn(img)) {
         return;
     }
     /*if (!get_top_ten_jumps(img)) {
@@ -552,7 +570,7 @@ int main(int argc, char* argv[])
     else if (KnobProf) {
         /* JIT Mode */
         INS_AddInstrumentFunction(Instruction, 0);
-        //INS_AddInstrumentFunction(Instruction3, 0);
+        INS_AddInstrumentFunction(Instruction3, 0);
         PIN_AddFiniFunction(Fini, 0);
         PIN_AddFiniFunction(Fini3, 0);
         // Never returns

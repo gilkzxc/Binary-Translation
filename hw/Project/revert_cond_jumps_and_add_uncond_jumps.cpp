@@ -138,7 +138,12 @@ VOID Trace(TRACE trace, VOID *v)
         xed_decoded_inst_t *xedd = INS_XedDec(ins_tail);
         
 		xed_category_enum_t category_enum = xed_decoded_inst_get_category(xedd);
-
+		/*if (BBL_HasFallThrough(bbl)) {
+			cerr << "Ends in fall through:\n";
+			for (INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)) {
+				cerr << INS_Disassemble(ins) << endl;
+			}
+		}*/
 		if (category_enum != XED_CATEGORY_COND_BR) 
 			continue;
 
