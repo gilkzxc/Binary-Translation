@@ -236,6 +236,7 @@ VOID Instruction(INS ins, VOID* v) {
 //    }
 //}
 VOID Instruction3(INS ins, VOID* v) {
+    ADDRINT ins_address = INS_Address(ins);
     RTN rtn_arg = INS_Rtn(ins);
     if (RTN_Valid(rtn_arg)) {
         ADDRINT rtn_address = RTN_Address(rtn_arg);
@@ -273,11 +274,16 @@ VOID Instruction3(INS ins, VOID* v) {
                     if (!isRtnExist(target_address)) {
                         rtn_map.emplace(target_address, target_rtn);
                     }
-                    if (!rtn_map[target_address].isCallerExist(rtn_address)) {
-                        rtn_map[target_address].caller_map.emplace(rtn_address, 0);
+                    //if (!rtn_map[target_address].isCallerExist(rtn_address)) {
+                    //    rtn_map[target_address].caller_map.emplace(rtn_address, 0);
+                    //}
+                    //INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
+                    //    &(rtn_map[target_address].caller_map[rtn_address]), IARG_END);
+                    if (!rtn_map[target_address].isCallerExist(ins_address)) {
+                        rtn_map[target_address].caller_map.emplace(ins_address, 0);
                     }
                     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)docount_rtn, IARG_PTR,
-                        &(rtn_map[target_address].caller_map[rtn_address]), IARG_END);
+                        &(rtn_map[target_address].caller_map[ins_address]), IARG_END);
                 }
 
             }
@@ -336,10 +342,16 @@ VOID Fini3(INT32 code, VOID* v) {
     sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, rtn>& a, std::pair<ADDRINT, rtn>& b) {return a.second.ins_count > b.second.ins_count; });
     for (size_t i = 0; i < vec.size(); i++) {
         ADDRINT dominate_caller_addr = vec[i].second.dominate_call();
+        //if (vec[i].second.name == "bsW") {
+        //    std::cout << "bsW hot call site profile:" << endl;
+        //    for (auto itr = vec[i].second.caller_map.begin(); itr != vec[i].second.caller_map.end(); ++itr) {
+        //        std::cout << "First: 0x" << std::hex << itr->first << ", Second: " << std::dec << itr->second << endl;
+        //    }
+        //}
         if (dominate_caller_addr != NO_DOMINATE_CALL) {
             output_file << vec[i].second.name << ", 0x" << std::hex << vec[i].first << ", "
                 << std::dec << vec[i].second.ins_count << ", " << vec[i].second.call_count << ", "
-                << vec[i].second.is_recursive << ", 0x" << dominate_caller_addr << endl;
+                << vec[i].second.is_recursive << ", 0x" << std::hex << dominate_caller_addr << endl;
         }
     }
 }
@@ -451,18 +463,25 @@ bool get_inline_functions_candidates_for_top_ten_rtn(IMG main_img) {
         if (is_recorsive || !ins_count || !call_count) {
             continue;
         }
-        ADDRINT candidate_addr, top_rtn_addr;
+        ADDRINT candidate_addr, top_rtn_addr, top_call_site_addr;
         std::istringstream candidate_addr_in_hex(temp_line[1]);
         candidate_addr_in_hex >> std::hex >> candidate_addr;
-        std::istringstream top_rtn_addr_in_hex(temp_line[5]);
-        top_rtn_addr_in_hex >> std::hex >> top_rtn_addr;
+        std::istringstream top_call_site_addr_in_hex(temp_line[5]);
+        top_call_site_addr_in_hex >> std::hex >> top_call_site_addr;
         /* Need to exclude recursive functions, fucntion without runtime instructions and calls. */
+        RTN top_rtn = RTN_FindByAddress(top_call_site_addr);
+        top_rtn_addr = RTN_Address(top_rtn);
         IMG candidate_img = IMG_FindByAddress(candidate_addr), top_rtn_img = IMG_FindByAddress(top_rtn_addr);
         if (IMG_Valid(candidate_img) && IMG_IsMainExecutable(candidate_img) 
-            && IMG_Valid(top_rtn_img) && IMG_IsMainExecutable(top_rtn_img)
-            && in_top_ten(top_rtn_addr)) {
-            if (!isInlineCandidateExist(top_rtn_addr, candidate_addr)) {
-                inline_functions_candidates_for_top_ten_rtn[top_rtn_addr].push_back(candidate_addr);
+            && IMG_Valid(top_rtn_img) && IMG_IsMainExecutable(top_rtn_img)) {
+            if (RTN_Name(top_rtn) != "fallbackQSort3") {
+                continue;
+            }
+            if (in_top_ten(top_rtn_addr)) {
+                std::pair<ADDRINT, ADDRINT> call_site_and_candidate_addr(top_call_site_addr, candidate_addr);
+                if (!isInlineCandidateExist(top_rtn_addr, call_site_and_candidate_addr)) {
+                    inline_functions_candidates_for_top_ten_rtn[top_rtn_addr].push_back(call_site_and_candidate_addr);
+                }
             }
         }
     }
@@ -478,7 +497,6 @@ VOID ImageLoad(IMG img, VOID* v)
 {
     // debug print of all images' instructions
     //dump_all_image_instrs(img);
-
 
     // Step 0: Check the image and the CPU:
     if (!IMG_IsMainExecutable(img))

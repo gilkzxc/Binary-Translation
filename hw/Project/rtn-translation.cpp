@@ -166,11 +166,11 @@ bool in_top_ten(ADDRINT rtn_address) {
 /*HW3*/
 
 /*Project*/
-std::map<ADDRINT, std::vector<ADDRINT>> inline_functions_candidates_for_top_ten_rtn;
+std::map<ADDRINT, std::vector<std::pair<ADDRINT, ADDRINT>>> inline_functions_candidates_for_top_ten_rtn;
 std::map<ADDRINT, std::vector<xed_ins_to_translate_t>> xedds_by_candidate_to_inline;
-bool isInlineCandidateExist(ADDRINT rtn_address, ADDRINT candidate_address) {
+bool isInlineCandidateExist(ADDRINT rtn_address, std::pair<ADDRINT, ADDRINT> call_site_and_candidate) {
 	for (size_t i = 0; i < inline_functions_candidates_for_top_ten_rtn[rtn_address].size(); i++) {
-		if (inline_functions_candidates_for_top_ten_rtn[rtn_address][i] == candidate_address) {
+		if (inline_functions_candidates_for_top_ten_rtn[rtn_address][i] == call_site_and_candidate) {
 			return true;
 		}
 	}
@@ -855,40 +855,46 @@ int find_candidate_rtns_for_translation(IMG img)
 			translated_rtn[translated_rtn_num].isSafeForReplacedProbe = true;
 			bool error1 = false, error2 = false, finished_to_insert_inline_func = false;
 			ADDRINT last_inlined_func;
+			std::cout << "Translating RTN: " << RTN_Name(rtn) << endl;
+			std::cout << "Number of inline candidates: " << inline_functions_candidates_for_top_ten_rtn[rtn_addr].size() << endl;
 			for (size_t i = 0; i < inline_functions_candidates_for_top_ten_rtn[rtn_addr].size(); i++) {
-				RTN x = RTN_FindByAddress(inline_functions_candidates_for_top_ten_rtn[rtn_addr][i]);
+				RTN x = RTN_FindByAddress(inline_functions_candidates_for_top_ten_rtn[rtn_addr][i].second);
 				if (!RTN_Valid(x)) {
 					translated_rtn[translated_rtn_num].instr_map_entry = -1;
 					break;
 				}
-				RTN_Open(x);
-				for (INS x_i = RTN_InsHead(x); INS_Valid(x_i) && !INS_IsRet(x_i); x_i = INS_Next(x_i)) {
-					xed_ins_to_translate_t new_xed;
-					new_xed.addr = INS_Address(x_i);
-					new_xed.size = INS_Size(x_i);
-					xed_error_enum_t xed_code;
-					xed_decoded_inst_zero_set_mode(&(new_xed.data), &dstate);
-					xed_code = xed_decode(&(new_xed.data), reinterpret_cast<UINT8*>(new_xed.addr), max_inst_len);
-					if (xed_code != XED_ERROR_NONE) {
-						cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << new_xed.addr << endl;
-						translated_rtn[translated_rtn_num].instr_map_entry = -1;
-						error1 = true;
-						break;
+				std::cout << "Translating RTN to inline: " << RTN_Name(x) << endl;
+				if (xedds_by_candidate_to_inline.find(RTN_Address(x)) == xedds_by_candidate_to_inline.end()) {
+					xedds_by_candidate_to_inline[RTN_Address(x)].clear();
+					RTN_Open(x);
+					for (INS x_i = RTN_InsHead(x); INS_Valid(x_i) && !INS_IsRet(x_i); x_i = INS_Next(x_i)) {
+						xed_ins_to_translate_t new_xed;
+						new_xed.addr = INS_Address(x_i);
+						new_xed.size = INS_Size(x_i);
+						xed_error_enum_t xed_code;
+						xed_decoded_inst_zero_set_mode(&(new_xed.data), &dstate);
+						xed_code = xed_decode(&(new_xed.data), reinterpret_cast<UINT8*>(new_xed.addr), max_inst_len);
+						if (xed_code != XED_ERROR_NONE) {
+							cerr << "ERROR: xed decode failed for instr at: " << "0x" << hex << new_xed.addr << endl;
+							translated_rtn[translated_rtn_num].instr_map_entry = -1;
+							error1 = true;
+							break;
+						}
+						/* Adding new_xed to map of vector of xed */
+						xedds_by_candidate_to_inline[RTN_Address(x)].push_back(new_xed);
 					}
-					if (xedds_by_candidate_to_inline.find(RTN_Address(x)) == xedds_by_candidate_to_inline.end()) {
-						xedds_by_candidate_to_inline[RTN_Address(x)].clear();
-					}
-					/* Adding new_xed to map of vector of xed */
-					xedds_by_candidate_to_inline[RTN_Address(x)].push_back(new_xed);
+					RTN_Close(x);
 				}
-				RTN_Close(x);
 				if (error1) {
+					std::cout << "ERROR1 1\n";
 					break;
 				}
 			}
 			if (error1) {
+				std::cout << "ERROR1 2\n";
 				//What to do?
 			}
+			std::cout << endl;
 			// Open the RTN.
 			RTN_Open( rtn );              
 
@@ -902,7 +908,10 @@ int find_candidate_rtns_for_translation(IMG img)
 				}				
 				if (INS_IsDirectControlFlow(ins) && INS_IsCall(ins)) {
 					ADDRINT target_address = INS_DirectControlFlowTargetAddress(ins);
-					if (isInlineCandidateExist(rtn_addr, target_address)) {
+					ADDRINT call_address = INS_Address(ins);
+					std::pair<ADDRINT, ADDRINT> inline_candidate(call_address, target_address);
+					if (isInlineCandidateExist(rtn_addr, inline_candidate)) {
+						std::cout << "Found call to: " << RTN_FindNameByAddress(target_address) << endl;
 						for (size_t i = 0; i < xedds_by_candidate_to_inline[target_address].size(); i++) {
 							// Add instr into instr map:
 							rc = add_new_instr_entry(&(xedds_by_candidate_to_inline[target_address][i].data),
@@ -920,6 +929,7 @@ int find_candidate_rtns_for_translation(IMG img)
 						}
 						finished_to_insert_inline_func = true;
 						last_inlined_func = target_address;
+						std::cout << "Done inserting to instr_map from xedds." << endl;
 					}
 				}
 				else {
@@ -945,18 +955,25 @@ int find_candidate_rtns_for_translation(IMG img)
 						break;
 					}
 					if (finished_to_insert_inline_func) {
+						std::cout << "Starting to replace RET instructions fron instr_map." << endl;
 						finished_to_insert_inline_func = false;
 						ADDRINT new_return_address = instr_map[num_of_instr_map_entries - 1].new_ins_addr;
 						int index_of_first_ins = num_of_instr_map_entries - 1 - xedds_by_candidate_to_inline[last_inlined_func].size();
+						int error_from_generator;
 						for (int i = (num_of_instr_map_entries - 1) - 1; i >= index_of_first_ins;i--) {
 							if (instr_map[i].category_enum == XED_CATEGORY_RET) {
 								/* Replace translated ret instruction with a uncond jump to new_return_address. */
 								xed_int32_t offset = (xed_int32_t)(new_return_address - instr_map[i].new_ins_addr);
-								int error_from_generator = uncondJumpGenerator_from_instr_map(i, offset);
+								error_from_generator = uncondJumpGenerator_from_instr_map(i, offset);
 								if (error_from_generator < 0) {
+									std::cout << "ERROR3\n";
 									/* Error handling */
+									break;
 								}
 							}
+						}
+						if (error_from_generator > -1) {
+							std::cout << "succesful replacement." << endl << endl;
 						}
 					}
 				}
@@ -1006,8 +1023,7 @@ int find_candidate_rtns_for_translation(IMG img)
 				 //    break;
 				 //  }
      //            }
-                
-                
+                    
                 
                 
 			} // end for INS...
