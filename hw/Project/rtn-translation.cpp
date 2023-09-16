@@ -334,17 +334,6 @@ public:
 
 
 
-class branch_taken {
-public:
-	ADDRINT target_address;
-	UINT64 count;
-	bool is_loop;
-	branch_taken() :target_address((ADDRINT)0), count(0), is_loop(false) {}
-	branch_taken(ADDRINT target_addr) :target_address(target_addr), count(0), is_loop(false) {}
-	branch_taken(ADDRINT target_addr, UINT64 new_count) :target_address(target_addr), count(new_count), is_loop(false) {}
-	~branch_taken() {}
-};
-
 
 
 class rtn {
@@ -404,7 +393,6 @@ public:
 	ADDRINT rtn_address;
 	UINT64 count_total;
 	UINT64 count_taken;
-	//std::vector<xed_ins_to_translate> body;
 	ADDRINT jump_address;
 	ADDRINT fall_address;
 	bbl() :tail_address((ADDRINT)0), rtn_address((ADDRINT)0), count_total(0), count_taken(0),
@@ -427,7 +415,6 @@ public:
 
 std::map<ADDRINT, rtn> rtn_map;
 std::map<ADDRINT, loop> loop_map;
-std::map<ADDRINT, branch_taken> branch_taken_map;
 std::map<ADDRINT, bbl> bbl_map;
 bool isElementExistInMap(ADDRINT address, auto map) {
 	return (!(map.find(address) == map.end()));
@@ -438,23 +425,11 @@ bool isRtnExist(ADDRINT rtn_address) {
 bool isLoopExist(ADDRINT loop_address) {
 	return (!(loop_map.find(loop_address) == loop_map.end()));
 }
-bool isbranch_takenExist(ADDRINT branch_taken_address) {
-	return (!(branch_taken_map.find(branch_taken_address) == branch_taken_map.end()));
-}
+
 bool isBblExist(ADDRINT bbl_address) {
 	return isElementExistInMap(bbl_address, bbl_map);
 }
-bool isBranch_loop(ADDRINT branch_address, bool branch_exist = false) {
-	branch_exist = (!branch_exist) ? isbranch_takenExist(branch_address) : branch_exist;
-	if (branch_exist) {
-		if (branch_taken_map[branch_address].is_loop) {
-			return true;
-		}
-		branch_taken_map[branch_address].is_loop = isLoopExist(branch_address);
-		return branch_taken_map[branch_address].is_loop;
-	}
-	return false;
-}
+
 
 /*Project*/
 /*HW3*/
@@ -474,6 +449,7 @@ std::map<ADDRINT, std::vector<std::pair<ADDRINT, ADDRINT>>> inline_functions_can
 std::map<ADDRINT, std::vector<std::pair<ADDRINT, ADDRINT>>> inline_functions_candidates;
 std::map<ADDRINT, std::vector<xed_ins_to_translate>> function_xedds_map;
 std::map<ADDRINT, std::vector<std::pair<ADDRINT, ADDRINT>>> reorderd_rtn_map;
+std::map<ADDRINT, ADDRINT> cond_br_address_to_end_of_fallthrough;
 bool isInlineCandidateExist(ADDRINT rtn_address, std::pair<ADDRINT, ADDRINT> call_site_and_candidate) {
 	for (size_t i = 0; i < inline_functions_candidates_for_top_ten_rtn[rtn_address].size(); i++) {
 		if (inline_functions_candidates_for_top_ten_rtn[rtn_address][i] == call_site_and_candidate) {
@@ -513,26 +489,7 @@ bool isInlineCandidateFunction(ADDRINT candidate_rtn_address) {
 //		}
 //	}
 //}
-//bool inlineCandidateInsert(ADDRINT caller_rtn_address, )
-/*Project*/
-//std::vector<std::pair<ADDRINT, branch_taken>> top_ten_jumps;
-//bool in_top_ten_jumps(ADDRINT jump_address) {
-//	for (auto itr = top_ten_jumps.begin(); itr != top_ten_jumps.end(); ++itr) {
-//		if (itr->first == jump_address) {
-//			return true;
-//		}
-//	}
-//	return false;
-//}
-//bool is_rtn_of_top_ten_jumps(ADDRINT rtn_address) {
-//	for (auto itr = top_ten_jumps.begin(); itr != top_ten_jumps.end(); ++itr) {
-//		RTN x = RTN_FindByAddress(itr->first);
-//		if (RTN_Valid(x) && RTN_Address(x) == rtn_address) {
-//			return true;
-//		}
-//	}
-//	return false;
-//}
+
 
 /* ============================================================= */
 /* Service dump routines                                         */
@@ -1400,12 +1357,13 @@ std::vector<xed_ins_to_translate> reorder(std::vector<xed_ins_to_translate> tran
 								Need to figure a away for it not to be in the -opt run.
 								Or a much more efficient way in Complexity.
 							*/
-							auto end_of_fallthrough = std::next(itr);
+							/*auto end_of_fallthrough = std::next(itr);
 							for (; std::next(end_of_fallthrough) != translated_routine.end()
 								&& std::next(end_of_fallthrough)->addr != itr->target_addr; ++end_of_fallthrough) {
-							}
-							if (end_of_fallthrough != translated_routine.end()) {
-								back_edges[end_of_fallthrough->addr] = i + 1;
+							}*/
+							//if (end_of_fallthrough != translated_routine.end()) {
+							if(isElementExistInMap(itr->addr, cond_br_address_to_end_of_fallthrough)){
+								back_edges[cond_br_address_to_end_of_fallthrough[itr->addr]] = i + 1;
 							}
 						}
 						else if (xed_error != XED_ERROR_NONE) {
@@ -1441,7 +1399,7 @@ std::vector<xed_ins_to_translate> reorder(std::vector<xed_ins_to_translate> tran
 					}
 					else {
 						result.push_back(new_back_jump);
-						std::cout << "New back jump, actual target: 0x" << std::hex << new_back_jump.target_addr << endl;
+						//std::cout << "New back jump, actual target: 0x" << std::hex << new_back_jump.target_addr << endl;
 					}
 				}
 			}
@@ -1469,10 +1427,11 @@ int find_candidate_rtns_for_translation2(IMG img)
 				cerr << "Warning: invalid routine " << RTN_Name(rtn) << endl;
 				continue;
 			}
-			if (RTN_Name(rtn) != "fallbackSimpleSort" && RTN_Name(rtn) != "fallbackQSort3"
-				&& RTN_Name(rtn) != "fallbackSort" && RTN_Name(rtn) != "myMalloc" && RTN_Name(rtn) != "myfeof" && RTN_Name(rtn) != "copyFileName") {
+			/*if (RTN_Name(rtn) != "fallbackSimpleSort" && RTN_Name(rtn) != "fallbackQSort3"
+				&& RTN_Name(rtn) != "fallbackSort" && RTN_Name(rtn) != "myMalloc" && RTN_Name(rtn) != "myfeof" &&
+				RTN_Name(rtn) != "fopen_output_safely" && RTN_Name(rtn) != "copyFileName" && RTN_Name(rtn) != "main") {
 				continue;
-			}
+			}*/
 			ADDRINT rtn_addr = RTN_Address(rtn);
 			if (function_xedds_map.find(rtn_addr) != function_xedds_map.end()) {
 				continue;
@@ -1497,6 +1456,7 @@ int find_candidate_rtns_for_translation2(IMG img)
 				}
 				/* Adding new_xed to map of vector of xed */
 				function_xedds_map[rtn_addr].push_back(new_xed);
+
 			}
 			//// debug print of routine name:
 			//if (KnobVerbose) {
@@ -1594,40 +1554,40 @@ int find_candidate_rtns_for_translation2(IMG img)
 		if (!itr->second.empty()) {
 			std::string rtn_name = RTN_FindNameByAddress(itr->first);
 			std::vector<xed_ins_to_translate> reorderd;
-			//if (rtn_name == "myMalloc" || rtn_name == "myfeof") {
-			if (rtn_name == "myMalloc" || rtn_name == "copyFileName" || rtn_name == "myfeof") {
+			//if (rtn_name != "deregister_tm_clones") {
+			if(rtn_name != "BZ2_hbMakeCodeLengths"){
+				continue;
+			}
+			if (isElementExistInMap(itr->first, reorderd_rtn_map) && !reorderd_rtn_map[itr->first].empty()){
 				std::cout << "Reorder " << rtn_name << ":" << endl;
 				reorderd = reorder(itr->second,reorderd_rtn_map[itr->first]);
 				if (reorderd.empty()) {
 					std::cout << "Reorder is empty." << endl;
 					continue;
 				}
-				//if (rtn_name == "copyFileName") {
-				//	char disasm_buf[2048];
-				//	std::cout << "Original translated:" << endl;
-				//	for (auto itt = itr->second.begin(); itt != itr->second.end(); itt++) {
-				//		xed_format_context(XED_SYNTAX_INTEL, &(itt->data), disasm_buf, 2048, static_cast<UINT64>(itt->addr), 0, 0);
-				//		std::cout << "0x" << hex << itt->addr << ": " << disasm_buf;
-				//		if (itt->target_addr != 0) {
-				//			std::cout << "     orig_targ: 0x" << hex << itt->target_addr << endl;
-				//		}
-				//		else {
-				//			std::cout << endl;
-				//		}
-				//	}
-				//	std::cout << "Reorderd translated:" << endl;
-				//	for (auto itt = reorderd.begin(); itt != reorderd.end(); itt++) {
-				//		xed_format_context(XED_SYNTAX_INTEL, &(itt->data), disasm_buf, 2048, static_cast<UINT64>(itt->addr), 0, 0);
-				//		std::cout << "0x" << hex << itt->addr << ": " << disasm_buf;
-				//		if (itt->target_addr != 0) {
-				//			std::cout << "     new orig_targ: 0x" << hex << itt->target_addr << endl;
-				//		}
-				//		else {
-				//			std::cout << endl;
-				//		}
-				//	}
-				//	continue;
-				//}
+				char disasm_buf[2048];
+				std::cout << "Original translated:" << endl;
+				for (auto itt = itr->second.begin(); itt != itr->second.end(); itt++) {
+					xed_format_context(XED_SYNTAX_INTEL, &(itt->data), disasm_buf, 2048, static_cast<UINT64>(itt->addr), 0, 0);
+					std::cout << "0x" << hex << itt->addr << ": " << disasm_buf;
+					if (itt->target_addr != 0) {
+						std::cout << "     orig_targ: 0x" << hex << itt->target_addr << endl;
+					}
+					else {
+						std::cout << endl;
+					}
+				}
+				std::cout << "Reorderd translated:" << endl;
+				for (auto itt = reorderd.begin(); itt != reorderd.end(); itt++) {
+					xed_format_context(XED_SYNTAX_INTEL, &(itt->data), disasm_buf, 2048, static_cast<UINT64>(itt->addr), 0, 0);
+					std::cout << "0x" << hex << itt->addr << ": " << disasm_buf;
+					if (itt->target_addr != 0) {
+						std::cout << "     new orig_targ: 0x" << hex << itt->target_addr << endl;
+					}
+					else {
+						std::cout << endl;
+					}
+				}
 				itr->second.clear();
 				itr->second = reorderd;
 			}

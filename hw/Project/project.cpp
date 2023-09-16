@@ -35,6 +35,17 @@ std::vector<std::string> split(std::string const& str, const char delim)
     return tokens;
 }
 
+size_t find_str_in_vector(const std::vector<std::string>& vector_of_str, std::string str)
+{   
+    size_t i = 0;
+    for (; i < vector_of_str.size(); i++) {
+        if (vector_of_str[i] == str) {
+            return i;
+        }
+    }
+    return i;
+}
+
 ADDRINT hex_in_string_to_addrint(const std::string& str) {
     ADDRINT address;
     std::istringstream addr_in_hex(str);
@@ -148,29 +159,22 @@ VOID loop_profile_per_ins_instrument(INS ins, VOID* v) {
                     RTN_Close(rtn_arg);
                 }
             }
-            else if (target > myself) {
-                branch_taken branch_taken_obj(target);
-                if (!isbranch_takenExist(myself)) {
-                    branch_taken_map.emplace(myself, branch_taken_obj);
-                }
-                if (INS_IsValidForIpointTakenBranch(ins)) {
-                    INS_InsertCall(ins, IPOINT_TAKEN_BRANCH, (AFUNPTR)docount_ins, IARG_PTR, &(branch_taken_map[myself].count), IARG_END);
-                }
-            }
         }
     }
 }
 
 
 
-VOID reorder_profile_per_ins_instrument(TRACE trace, VOID* v) {
+
+VOID reorder_profile_per_trace_instrument(TRACE trace, VOID* v) {
     RTN rtn_arg = TRACE_Rtn(trace);
     if (RTN_Valid(rtn_arg)) {
         ADDRINT rtn_address = RTN_Address(rtn_arg);
         //if (RTN_Name(rtn_arg) != "myMalloc" && RTN_Name(rtn_arg) != "snocString" && RTN_Name(rtn_arg) != "myfeof") {
-        if (RTN_Name(rtn_arg) != "myMalloc" && RTN_Name(rtn_arg) != "myfeof" && RTN_Name(rtn_arg) != "copyFileName") {
+        /*if (RTN_Name(rtn_arg) != "myMalloc" && RTN_Name(rtn_arg) != "myfeof" &&
+            RTN_Name(rtn_arg) != "copyFileName" && RTN_Name(rtn_arg) != "fopen_output_safely" && RTN_Name(rtn_arg) != "main") {
             return;
-        }
+        }*/
         IMG img = IMG_FindByAddress(rtn_address);
         if (!IMG_Valid(img)) {
             return;
@@ -205,6 +209,43 @@ VOID reorder_profile_per_ins_instrument(TRACE trace, VOID* v) {
         }
     }
 }
+
+
+
+VOID reorder2_profile_per_ins_instrument(RTN rtn_arg, VOID* v) {
+    if (RTN_Valid(rtn_arg)) {
+        ADDRINT rtn_address = RTN_Address(rtn_arg);
+        IMG img = IMG_FindByAddress(rtn_address);
+        if (!IMG_Valid(img)) {
+            return;
+        }
+        if (!IMG_IsMainExecutable(img)) {
+            return;
+        }
+        RTN_Open(rtn_arg);
+        for (INS ins = RTN_InsHead(rtn_arg); INS_Valid(ins); ins = INS_Next(ins)) {
+            if (INS_IsDirectControlFlow(ins)) {
+                ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
+                if (target > INS_Address(ins) && INS_HasFallThrough(ins)){
+                    INS end_fall = INS_Next(ins);
+                    for (; INS_Valid(end_fall) &&  INS_Valid(INS_Next(end_fall)) && (INS_Address(INS_Next(end_fall)) < target); end_fall = INS_Next(end_fall)) {
+                        ;
+                    }
+                    if (INS_Valid(end_fall)) {
+                        /* end_fall is the ins at the end of a fall_through. */
+                        cond_br_address_to_end_of_fallthrough[INS_Address(ins)] = INS_Address(end_fall);
+                    }
+                    else {
+                        std::cout << endl;
+                    }
+
+                }
+            }
+        }
+        RTN_Close(rtn_arg);
+    }
+}
+
 VOID inline_profile_per_ins_instrument(INS ins, VOID* v) {
     ADDRINT ins_address = INS_Address(ins);
     RTN rtn_arg = INS_Rtn(ins);
@@ -287,7 +328,6 @@ VOID inline_profile_per_ins_instrument(INS ins, VOID* v) {
     }
 }
 
-
 /* ===================================================================== */
 
 VOID Fini(INT32 code, VOID* v) {
@@ -317,21 +357,9 @@ VOID Fini(INT32 code, VOID* v) {
         }
     }
 }
-VOID Fini2(INT32 code, VOID* v) {
-    std::ofstream output_file("count.csv", std::ofstream::out);
-    std::vector<std::pair<ADDRINT, branch_taken>> vec;
-    for (auto itr = branch_taken_map.begin(); itr != branch_taken_map.end(); ++itr) {
-        if (isBranch_loop(itr->first, true)) {
-            continue;
-        }
-        vec.push_back(*itr);
-    }
-    sort(vec.begin(), vec.end(), [=](std::pair<ADDRINT, branch_taken>& a, std::pair<ADDRINT, branch_taken>& b) {return a.second.count > b.second.count; });
-    for (size_t i = 0; i < vec.size(); i++) {
-        output_file << "0x" << std::hex << vec[i].first << ", 0x" << std::hex << vec[i].second.target_address << ", "
-            << std::dec << vec[i].second.count << ", " << RTN_FindNameByAddress(vec[i].first) << endl;
-    }
-}
+
+
+
 
 bool isSingleValueExistInVector(auto vector, auto value) {
     for (auto it = vector.begin(); it != vector.end(); it++) {
@@ -439,12 +467,26 @@ VOID Fini4(INT32 code, VOID* v) {
         }
         rtn_reorder_map[rtn_addr][itr->first] = itr->second;
     }
-    
-    for (auto rtn_to_reorder = rtn_reorder_map.begin(); rtn_to_reorder != rtn_reorder_map.end(); rtn_to_reorder++) {
-        output_file << rtn_map[rtn_to_reorder->first].name << ", 0x" << std::hex << rtn_to_reorder->first << ", start, ";
-        std::vector <std::pair<ADDRINT, bbl>> reordered = reordered_rtn(rtn_to_reorder->second);
-        std::cout << "RTN to reorder in Fini4: " << rtn_map[rtn_to_reorder->first].name << endl;
-        int i = 0;
+    std::vector<std::pair<ADDRINT, rtn>> rtn_array_sorted_by_ins_count;
+    for (auto itr = rtn_map.begin(); itr != rtn_map.end(); ++itr) {
+        rtn_array_sorted_by_ins_count.push_back(*itr);
+    }
+    sort(rtn_array_sorted_by_ins_count.begin(), rtn_array_sorted_by_ins_count.end(),
+        [=](std::pair<ADDRINT, rtn>& a, std::pair<ADDRINT, rtn>& b) {return a.second.ins_count > b.second.ins_count; });
+    //for (auto rtn_to_reorder = rtn_reorder_map.begin(); rtn_to_reorder != rtn_reorder_map.end(); rtn_to_reorder++) {
+    for(auto rtn_it = rtn_array_sorted_by_ins_count.begin(); rtn_it != rtn_array_sorted_by_ins_count.end(); rtn_it++){
+        ADDRINT dominate_caller_addr = rtn_it->second.dominate_call();
+        output_file << rtn_it->second.name << ",0x" << std::hex << rtn_it->first << ","
+            << std::dec << rtn_it->second.ins_count << "," << rtn_it->second.call_count << ","
+            << rtn_it->second.is_recursive << ",0x" << std::hex << dominate_caller_addr << ","
+            << std::dec << rtn_it->second.to_translate
+            << ",start_bbl_list,";
+        std::vector <std::pair<ADDRINT, bbl>> reordered;
+        if (isElementExistInMap(rtn_it->first, rtn_reorder_map) && !rtn_reorder_map[rtn_it->first].empty()) {
+            reordered = reordered_rtn(rtn_reorder_map[rtn_it->first]);
+        }
+        //std::cout << "RTN to reorder in Fini4: " << rtn_map[rtn_to_reorder->first].name << endl;
+        /*int i = 0;
         for (auto shit = rtn_to_reorder->second.begin(); shit != rtn_to_reorder->second.end(); shit++) {
             std::cout << "BBL[" << std::dec << i << "]:" << endl;
             std::cout << "start: 0x" << std::hex << shit->first << endl;
@@ -454,15 +496,31 @@ VOID Fini4(INT32 code, VOID* v) {
             std::cout << "jump: 0x" << std::hex << shit->second.jump_address << endl;
             std::cout << "fall: 0x" << std::hex << shit->second.fall_address << endl;
             i++;
-        }
+        }*/
+        /*ADDRINT dominate_caller_addr = rtn_map[rtn_to_reorder->first].dominate_call();
+        output_file << rtn_map[rtn_to_reorder->first].name << ",0x" << std::hex << rtn_to_reorder->first
+            << std::dec << rtn_map[rtn_to_reorder->first].ins_count << "," << rtn_map[rtn_to_reorder->first].call_count << ","
+            << rtn_map[rtn_to_reorder->first].is_recursive << ",0x" << std::hex << dominate_caller_addr << std::dec
+            << "," << rtn_map[rtn_to_reorder->first].to_translate
+
+            << ",start_bbl_list,";*/
         for (size_t i = 0; i < reordered.size(); i++) {
-            std::cout << "BBL[" << std::dec << i << "]:" << endl;
+            /*std::cout << "BBL[" << std::dec << i << "]:" << endl;
             std::cout << "start: 0x" << std::hex << reordered[i].first << endl;
-            std::cout << "end: 0x" << std::hex << reordered[i].second.tail_address << endl;
-            output_file << "0x" << std::hex << reordered[i].first << ", 0x" << std::hex << reordered[i].second.tail_address  << ", ";
+            std::cout << "end: 0x" << std::hex << reordered[i].second.tail_address << endl;*/
+            output_file << "0x" << std::hex << reordered[i].first << ",0x" << std::hex << reordered[i].second.tail_address  << ",";
         }
-        output_file << "end" << endl;
+        output_file << "end_bbl_list,start_cond_end_list,";
+        for (size_t i = 0; i < reordered.size(); i++) {
+            ADDRINT possible_cond_br = reordered[i].second.tail_address;
+            if (isElementExistInMap(possible_cond_br, cond_br_address_to_end_of_fallthrough)) {
+                output_file << "0x" << std::hex << possible_cond_br << ",0x" << std::hex <<
+                    cond_br_address_to_end_of_fallthrough[possible_cond_br] << ",";
+            }
+        }
+        output_file << "end_cond_end_list" << endl;
     }
+    cond_br_address_to_end_of_fallthrough.clear();
 }
 
 
@@ -542,48 +600,6 @@ bool get_top_ten_rtn(IMG main_img) {
 }
 
 
-//bool get_top_ten_jumps(IMG main_img) {
-//    std::ifstream input_file("count.csv");
-//    if (!input_file.is_open()) {
-//        /* Failed to open. */
-//        return false;
-//    }
-//    std::string line;
-//    while (std::getline(input_file, line)) {
-//        std::vector<std::string> temp_line = split(line, ',');
-//        UINT64 count = std::stoi(temp_line[2]);
-//        ADDRINT addr_myself, addr_target;
-//        std::istringstream myself_in_hex(temp_line[0]);
-//        myself_in_hex >> std::hex >> addr_myself;
-//        std::istringstream target_in_hex(temp_line[1]);
-//        target_in_hex >> std::hex >> addr_target;
-//        IMG img = IMG_FindByAddress(addr_myself);
-//        if (IMG_Valid(img)) {
-//            if (IMG_IsMainExecutable(img)) {
-//                if (!in_top_ten_jumps(addr_myself)) {
-//                    branch_taken obj(addr_target);
-//                    if (top_ten_jumps.size() < 10) {
-//                        top_ten_jumps.push_back(std::pair<ADDRINT, branch_taken>(addr_myself, obj));
-//                        sort(top_ten_jumps.begin(), top_ten_jumps.end(), [=](std::pair<ADDRINT, branch_taken>& a, std::pair<ADDRINT, branch_taken>& b) {return a.second.count < b.second.count; });
-//                    }
-//                    else {
-//                        if (count > top_ten_jumps[0].second.count) {
-//                            top_ten_jumps.erase(top_ten_jumps.begin());
-//                            top_ten_jumps.push_back(std::pair<ADDRINT, branch_taken>(addr_myself, obj));
-//                            sort(top_ten_jumps.begin(), top_ten_jumps.end(), [=](std::pair<ADDRINT, branch_taken>& a, std::pair<ADDRINT, branch_taken>& b) {return a.second.count < b.second.count; });
-//                        }
-//                    }
-//                }
-//            }
-//        }
-//    }
-//    input_file.close();
-//    return true;
-//}
-
-
-
-
 
 bool get_inline_functions_candidates_for_top_ten_rtn(IMG main_img) {
     std::ifstream input_file("rtn-output.csv");
@@ -617,7 +633,7 @@ bool get_inline_functions_candidates_for_top_ten_rtn(IMG main_img) {
                 continue;
             }
             //if(RTN_Name(top_rtn) != "compress"){
-            std::cout << "Caller: " << RTN_Name(top_rtn) << ", Callee: " << RTN_FindNameByAddress(candidate_addr) << endl;
+            //std::cout << "Caller: " << RTN_Name(top_rtn) << ", Callee: " << RTN_FindNameByAddress(candidate_addr) << endl;
             //if(RTN_Name(top_rtn) != "BZ2_compressBlock"){
             //    continue;
             //}
@@ -656,37 +672,42 @@ bool get_reorderd_rtn_map(IMG main_img) {
                 if (!isElementExistInMap(rtn_address, reorderd_rtn_map)) {
                     reorderd_rtn_map[rtn_address].clear();
                 }
-                //bool start = false;
-                /*for (size_t i = 2; temp_line[i] != "end" && i < temp_line.size(); i++) {
-                    if (temp_line[i] == "start") {
-                        start = true;
-                    }
-                    else if (start && temp_line[i + 1] != "end") {
-                        ADDRINT start_bbl_address = hex_in_string_to_addrint(temp_line[i]);
-                        ADDRINT end_bbl_address = hex_in_string_to_addrint(temp_line[i+1]);
-                        reorderd_rtn_map[rtn_address].push_back(std::pair<ADDRINT, ADDRINT>(start_bbl_address, end_bbl_address));
-                    }
-                }*/
-                for (size_t i = 3; i < temp_line.size() - 1; i+= 2) {
+                size_t start_bbl_list = find_str_in_vector(temp_line, "start_bbl_list");
+                size_t end_bbl_list = find_str_in_vector(temp_line, "end_bbl_list");
+                size_t start_cond_end_list = find_str_in_vector(temp_line, "start_cond_end_list");
+                size_t end_cond_end_list = find_str_in_vector(temp_line, "end_cond_end_list");
+                for (size_t i = start_bbl_list + 1; i < end_bbl_list; i+= 2) {
                     ADDRINT start_bbl_address = hex_in_string_to_addrint(temp_line[i]);
                     ADDRINT end_bbl_address = hex_in_string_to_addrint(temp_line[i + 1]);
                     reorderd_rtn_map[rtn_address].push_back(std::pair<ADDRINT, ADDRINT>(start_bbl_address, end_bbl_address));
+                }
+                for (size_t i = start_cond_end_list + 1; i < end_cond_end_list; i += 2) {
+                    ADDRINT cond_br_address = hex_in_string_to_addrint(temp_line[i]);
+                    ADDRINT end_fall_address = hex_in_string_to_addrint(temp_line[i + 1]);
+                    cond_br_address_to_end_of_fallthrough[cond_br_address] = end_fall_address;
                 }
 
             }
         }
     }
     input_file.close();
+    /*std::cout << "reorderd_rtn_map.size(): " << std::dec << reorderd_rtn_map.size() << endl;
     for (auto it = reorderd_rtn_map.begin(); it != reorderd_rtn_map.end(); it++) {
         std::cout << "The planned reorder of function at address: 0x" << std::hex << it->first << ", with vector size: "
             << std::dec << it->second.size() << endl;
         for (size_t i = 0; i < it->second.size(); i++) {
-            std::cout << "BBL [" << i << "]: start: 0x" << std::hex << it->second[i].first << " ,end: 0x" << std::hex << it->second[i].second << endl;
+            std::cout << "BBL [" << i << "]: start: 0x" << std::hex << it->second[i].first << " ,end: 0x" << std::hex << it->second[i].second;
+            if (isElementExistInMap(it->second[i].second, cond_br_address_to_end_of_fallthrough)) {
+                std::cout << ", end_fall: 0x" << std::hex << cond_br_address_to_end_of_fallthrough[it->second[i].second];
+            }
+            std::cout << endl;
         }
-    }
+    }*/
     return true;
 }
 /* ===================================================================== */
+
+
 
 
 /* ============================================ */
@@ -791,7 +812,8 @@ int main(int argc, char* argv[])
     else if (KnobProf) {
         /* JIT Mode */
         INS_AddInstrumentFunction(loop_profile_per_ins_instrument, 0);
-        TRACE_AddInstrumentFunction(reorder_profile_per_ins_instrument, 0);
+        TRACE_AddInstrumentFunction(reorder_profile_per_trace_instrument, 0);
+        RTN_AddInstrumentFunction(reorder2_profile_per_ins_instrument, 0);
         INS_AddInstrumentFunction(inline_profile_per_ins_instrument, 0);
         //PIN_AddFiniFunction(Fini, 0);
         //PIN_AddFiniFunction(Fini3, 0);
